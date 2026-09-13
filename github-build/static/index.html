@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token-Usage-Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+<!-- Chart.js 4.4.1 (MIT), mitgeliefert unter static/vendor/. SHA-384 der Datei:
+     6ecfe77fd15b74da2e45b32215cadc65f2d760f2a23da1951a99556efedd2c610271c1170d6f92df38ea48a479644683 -->
+<script src="/static/vendor/chart.umd.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-main">
+    <h1 data-i18n="ui.app.title">Token-Usage-Dashboard</h1>
+    <p class="datadir"><span data-i18n="ui.app.datadir">Datenverzeichnis:</span> <code id="data-directory"></code></p>
+  </div>
+  <div class="topbar-actions">
+    <span id="last-load" class="muted"></span>
+    <select id="lang-select" data-i18n-aria="ui.lang.aria"></select>
+    <a class="icon-link" href="https://github.com/Flexible-Universe/Token-Usage-Dashboard"
+       target="_blank" rel="noopener noreferrer"
+       data-i18n-title="ui.app.github" data-i18n-aria="ui.app.github">
+      <svg width="20" height="20" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A7.995 7.995 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+      </svg>
+    </a>
+    <button id="reload" type="button" class="primary" data-i18n="ui.app.reload">Daten neu laden</button>
+  </div>
+</header>
+
+<nav class="tabs" data-i18n-aria="ui.nav.aria" aria-label="Ansicht">
+  <button type="button" class="tab is-active" data-tab="overview" data-i18n="ui.tab.overview">Uebersicht</button>
+  <button type="button" class="tab" data-tab="projects" data-i18n="ui.tab.projects">Projekte</button>
+  <button type="button" class="tab" data-tab="sessions" data-i18n="ui.tab.sessions">Sessions</button>
+  <button type="button" class="tab" data-tab="blocks" data-i18n="ui.tab.blocks">Bloecke</button>
+  <button type="button" class="tab" data-tab="rtk" data-i18n="ui.tab.rtk">RTK</button>
+</nav>
+
+<section id="status" class="status" aria-live="polite">
+  <div class="status-line" id="status-line" data-i18n="ui.status.loading">Daten werden geladen …</div>
+  <ul class="issue-list" id="issue-list" hidden></ul>
+</section>
+
+<section class="controls" data-i18n-aria="ui.filter.aria" aria-label="Filter">
+  <div class="control">
+    <label for="period" data-i18n="ui.filter.period">Zeitraum</label>
+    <select id="period"></select>
+  </div>
+  <div class="control" id="range-control" hidden>
+    <label for="date-from" data-i18n="ui.filter.from">Von</label>
+    <input type="date" id="date-from">
+  </div>
+  <div class="control" id="range-control-to" hidden>
+    <label for="date-to" data-i18n="ui.filter.to">Bis</label>
+    <input type="date" id="date-to">
+  </div>
+  <div class="control">
+    <label for="measure" data-i18n="ui.filter.measure">Groesse</label>
+    <select id="measure">
+      <option value="cost" data-i18n="ui.filter.measure.cost">Kosten (US-Dollar)</option>
+      <option value="tokens" data-i18n="ui.filter.measure.tokens">Tokens</option>
+    </select>
+  </div>
+  <div class="control control-models">
+    <label data-i18n="ui.filter.models">Modelle</label>
+    <div class="model-actions">
+      <button type="button" id="models-all" class="link" data-i18n="ui.filter.models.all">Alle</button>
+      <button type="button" id="models-none" class="link" data-i18n="ui.filter.models.none">Keine</button>
+      <button type="button" id="models-claude" class="link" data-i18n="ui.filter.models.claude">Nur Claude</button>
+      <button type="button" id="models-codex" class="link" data-i18n="ui.filter.models.codex">Nur Codex</button>
+    </div>
+    <div id="model-filter" class="model-filter"></div>
+  </div>
+</section>
+
+<div id="tab-overview" class="tabpanel">
+
+<section class="kpis" id="kpis"></section>
+
+<section id="projection" class="projection" hidden></section>
+
+<section class="grid">
+  <figure class="card wide">
+    <figcaption>
+      <h2 data-i18n="ui.overview.cumulative.head">Kumulierte Monatskosten</h2>
+      <p data-i18n="ui.overview.cumulative.note">Eine Linie je Monat, X-Achse ist der Tag im Monat. Damit lassen sich
+         Monate direkt vergleichen.</p>
+    </figcaption>
+    <div class="canvas-box"><canvas id="chart-cumulative"></canvas></div>
+  </figure>
+
+  <figure class="card wide">
+    <figcaption>
+      <h2 data-i18n="ui.overview.stacked.head">Tageswerte, gestapelt nach Modell</h2>
+      <p data-i18n="ui.overview.stacked.note">Fehlende Tage bleiben leer, sie werden nicht als Null gezeichnet.</p>
+    </figcaption>
+    <div class="canvas-box"><canvas id="chart-stacked"></canvas></div>
+  </figure>
+
+  <figure class="card wide">
+    <figcaption>
+      <h2 data-i18n="ui.overview.cpm.head">Kosten pro 1 Mio. Tokens</h2>
+      <p data-i18n="ui.overview.cpm.note">Tageswert und 7-Tage-Mittel. Misst den Modell-Mix, nicht das
+         Arbeitsvolumen. Das Mittel laeuft ueber ein Kalenderfenster und
+         ueberspringt fehlende Tage, statt sie als Null zu zaehlen.</p>
+    </figcaption>
+    <div class="canvas-box"><canvas id="chart-cpm"></canvas></div>
+  </figure>
+
+  <figure class="card">
+    <figcaption>
+      <h2 data-i18n="ui.overview.pareto.head">Pareto der Modellkosten</h2>
+      <p data-i18n="ui.overview.pareto.note">Balken absteigend, kumulierter Anteil auf der rechten Achse.</p>
+    </figcaption>
+    <div class="canvas-box"><canvas id="chart-pareto"></canvas></div>
+  </figure>
+
+  <figure class="card">
+    <figcaption>
+      <h2 data-i18n="ui.overview.timeline.head">Modell-Zeitleiste</h2>
+      <p data-i18n="ui.overview.timeline.note">Erster bis letzter Einsatztag je Modell.</p>
+    </figcaption>
+    <div class="canvas-box"><canvas id="chart-timeline"></canvas></div>
+  </figure>
+
+  <figure class="card wide">
+    <figcaption>
+      <h2 data-i18n="ui.overview.reload.head">Kontext-Reload-Faktor</h2>
+      <p data-i18n="ui.overview.reload.note">cacheReadTokens geteilt durch outputTokens, ueber alle gewaehlten
+         Modelle. Steigende Werte bedeuten laengere Sessions mit mehr
+         wiederholtem Kontext.</p>
+    </figcaption>
+    <div class="canvas-box"><canvas id="chart-reload"></canvas></div>
+  </figure>
+
+  <figure class="card wide">
+    <figcaption>
+      <h2 data-i18n="ui.overview.agents.head">Claude gegen Codex je Tag</h2>
+      <p id="agents-note">Gestapelte Tageswerte je Agent.</p>
+    </figcaption>
+    <div class="canvas-box"><canvas id="chart-agents"></canvas></div>
+  </figure>
+</section>
+
+<section class="card wide">
+  <h2 data-i18n="ui.overview.modeltable.head">Kostenanteil je Modell</h2>
+  <p class="note"><span data-i18n="ui.overview.modeltable.note1">Die Spalte</span>
+     <strong data-i18n="ui.overview.modeltable.column">$ / 1 Mio. Output-Token</strong>
+     <span data-i18n="ui.overview.modeltable.note2">ist ein empirisches Nutzungsverhaeltnis aus Summe(cost) geteilt durch Summe(outputTokens),</span>
+     <strong data-i18n="ui.overview.modeltable.note3">kein Listenpreis</strong><span data-i18n="ui.overview.modeltable.note4">. Modelle, die fuer lange Kontexte mit wenig Output eingesetzt wurden, sehen darin teurer aus, als sie sind.</span></p>
+  <div class="table-scroll">
+    <table id="model-table">
+      <thead>
+        <tr>
+          <th data-i18n="ui.overview.modeltable.model">Modell</th><th data-i18n="ui.overview.modeltable.agent">Agent</th><th class="num" data-i18n="ui.common.cost">Kosten</th>
+          <th class="num" data-i18n="ui.common.share">Anteil</th><th class="num" data-i18n="ui.common.tokens">Tokens</th>
+          <th class="num" data-i18n="ui.overview.modeltable.output">Output-Token</th>
+          <th class="num" data-i18n="ui.overview.modeltable.cpmout">$ / 1 Mio. Output-Token</th>
+          <th class="num" data-i18n="ui.common.cpm">$ / 1 Mio. Tokens</th>
+          <th class="num" data-i18n="ui.overview.modeltable.reload">Kontext-Reload</th>
+          <th class="num" data-i18n="ui.common.days">Tage</th><th data-i18n="ui.overview.modeltable.first">Erster Tag</th><th data-i18n="ui.overview.modeltable.last">Letzter Tag</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card wide">
+  <h2 data-i18n="ui.overview.months.head">Monatssummen</h2>
+  <div class="table-scroll">
+    <table id="month-table">
+      <thead>
+        <tr><th data-i18n="ui.common.month">Monat</th><th class="num" data-i18n="ui.common.days_with_data">Tage mit Daten</th>
+        <th class="num" data-i18n="ui.common.tokens">Tokens</th><th class="num" data-i18n="ui.common.cost">Kosten</th>
+        <th class="num" data-i18n="ui.common.cpm">$ / 1 Mio. Tokens</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card wide">
+  <h2 data-i18n="ui.overview.topdays.head">Die 10 teuersten Tage</h2>
+  <div class="table-scroll">
+    <table id="topdays-table">
+      <thead>
+        <tr><th data-i18n="ui.common.date">Datum</th><th class="num" data-i18n="ui.common.cost">Kosten</th><th class="num" data-i18n="ui.common.tokens">Tokens</th>
+        <th class="num" data-i18n="ui.common.cpm">$ / 1 Mio. Tokens</th><th data-i18n="ui.overview.topdays.breakdown">Aufschluesselung nach Modell</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card wide">
+  <h2 data-i18n="ui.overview.files.head">Geladene Dateien</h2>
+  <div class="table-scroll">
+    <table id="file-table">
+      <thead>
+        <tr><th data-i18n="ui.files.file">Datei</th><th data-i18n="ui.files.status">Status</th><th data-i18n="ui.files.schema">Schema</th>
+        <th class="num" data-i18n="ui.common.days">Tage</th><th class="num" data-i18n="ui.common.tokens">Tokens</th><th class="num" data-i18n="ui.common.cost">Kosten</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+</div>
+
+<div id="tab-projects" class="tabpanel" hidden>
+  <section class="kpis" id="projects-kpis"></section>
+
+  <section class="grid">
+    <figure class="card wide">
+      <figcaption>
+        <h2 data-i18n="ui.projects.stacked.head">Tageswerte, gestapelt nach Projekt</h2>
+        <p data-i18n="ui.projects.stacked.note">Die acht teuersten Projekte einzeln, der Rest als Sammelposten
+           "Sonstige". Fehlende Tage bleiben leer, sie werden nicht als Null
+           gezeichnet.</p>
+      </figcaption>
+      <div class="canvas-box"><canvas id="chart-projects"></canvas></div>
+    </figure>
+  </section>
+
+  <section class="card wide">
+    <h2 data-i18n="ui.projects.table.head">Kosten je Projekt</h2>
+    <p class="note" data-i18n="ui.projects.table.note">Quelle ist projects/YYYY-MM.json aus dem
+       daily-Export. Diese Dateien legt der Export erst seit dem 01.09.2026 an;
+       der Bestand reicht rueckwirkend bis in den August 2026. Fuer frueher
+       liegende Zeitraeume erscheint statt eines leeren Diagramms ein
+       Abdeckungshinweis.</p>
+    <div class="table-scroll">
+      <table id="projects-table">
+        <thead>
+          <tr><th data-i18n="ui.projects.project">Projekt</th><th class="num" data-i18n="ui.common.cost">Kosten</th><th class="num" data-i18n="ui.common.share">Anteil</th>
+          <th class="num" data-i18n="ui.common.tokens">Tokens</th><th class="num" data-i18n="ui.common.days">Tage</th>
+          <th class="num" data-i18n="ui.common.cpm">$ / 1 Mio. Tokens</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+<div id="tab-sessions" class="tabpanel" hidden>
+  <section class="kpis" id="sessions-kpis"></section>
+
+  <section class="grid">
+    <figure class="card wide">
+      <figcaption>
+        <h2 data-i18n="ui.sessions.hist.head">Kosten je Session</h2>
+        <p data-i18n="ui.sessions.hist.note">Verteilung in Klassen. Der Median allein verdeckt, dass wenige
+           Sessions den Grossteil der Kosten tragen.</p>
+      </figcaption>
+      <div class="canvas-box"><canvas id="chart-sessions"></canvas></div>
+    </figure>
+  </section>
+
+  <section class="card wide">
+    <h2 data-i18n="ui.sessions.table.head">Die 20 teuersten Sessions</h2>
+    <p class="note"><span data-i18n="ui.sessions.table.note1">Quelle ist sessions/YYYY-Www.json aus dem
+       weekly-Export. Die Spalte</span> <strong data-i18n="ui.sessions.duration">Dauer</strong>
+       <span data-i18n="ui.sessions.table.note2">ist die Spanne zwischen erster und letzter Aktivitaet,</span>
+       <strong data-i18n="ui.sessions.table.note3">nicht</strong><span data-i18n="ui.sessions.table.note4"> die aktive
+       Arbeitszeit. Zeiten in Ortszeit; auch der Zeitraumfilter arbeitet nach
+       Ortszeit, nicht nach dem UTC-Tag des Zeitstempels.</span></p>
+    <div class="table-scroll">
+      <table id="sessions-table">
+        <thead>
+          <tr><th data-i18n="ui.sessions.start">Start</th><th class="num" data-i18n="ui.sessions.duration">Dauer</th><th data-i18n="ui.projects.project">Projekt</th>
+          <th data-i18n="ui.sessions.models">Modelle</th><th class="num" data-i18n="ui.common.cost">Kosten</th><th class="num" data-i18n="ui.common.tokens">Tokens</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+<div id="tab-blocks" class="tabpanel" hidden>
+  <section class="kpis" id="blocks-kpis"></section>
+
+  <section id="blocks-active" class="projection" hidden></section>
+
+  <section class="grid">
+    <figure class="card wide">
+      <figcaption>
+        <h2 data-i18n="ui.blocks.chart.head">5-Stunden-Bloecke</h2>
+        <p data-i18n="ui.blocks.chart.note">Balken sind die Kosten je Block, die Linie ist die Burn-Rate in
+           US-Dollar pro Stunde auf der rechten Achse. Leerlauf zwischen zwei
+           Bloecken bleibt eine Luecke und wird nicht als Null gezeichnet.</p>
+      </figcaption>
+      <div class="canvas-box"><canvas id="chart-blocks"></canvas></div>
+    </figure>
+  </section>
+
+  <section class="card wide">
+    <h2 data-i18n="ui.blocks.filter.head">Zum Modellfilter</h2>
+    <p class="note"><span data-i18n="ui.blocks.filter.note1">Die Quelle blocks/YYYY-Www.json nennt je Block
+       nur die benutzten Modelle, ohne Kosten je Modell. Der Modellfilter der
+       Kopfzeile wirkt in diesem Reiter deshalb</span> <strong data-i18n="ui.sessions.table.note3">nicht</strong><span data-i18n="ui.blocks.filter.note2">. Der
+       Zeitraumfilter wirkt.</span></p>
+  </section>
+</div>
+<div id="tab-rtk" class="tabpanel" hidden>
+  <section class="kpis" id="rtk-kpis"></section>
+
+  <section class="grid">
+    <figure class="card wide">
+      <figcaption>
+        <h2 data-i18n="ui.rtk.chart.head">RTK-Ersparnis je Tag</h2>
+        <p data-i18n="ui.rtk.chart.note">Balken sind gesparte Token je Kalendertag, die Linie ist die
+           Sparquote in Prozent auf der rechten Achse, fest von 0 bis 100.
+           Fehlende Tage bleiben eine Luecke und werden nicht als Null
+           gezeichnet.</p>
+      </figcaption>
+      <div class="canvas-box"><canvas id="chart-rtk"></canvas></div>
+    </figure>
+  </section>
+
+  <section class="card wide">
+    <h2 data-i18n="ui.rtk.months.head">Monatssummen</h2>
+    <div class="table-scroll">
+      <table id="rtk-month-table">
+        <thead>
+          <tr><th data-i18n="ui.common.month">Monat</th><th class="num" data-i18n="ui.rtk.commands">Befehle</th>
+          <th class="num" data-i18n="ui.rtk.raw">Rohausgabe</th><th class="num" data-i18n="ui.rtk.saved">Gesparte Token</th>
+          <th class="num" data-i18n="ui.rtk.rate">Sparquote</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card wide">
+    <h2 data-i18n="ui.rtk.notes.head">Zum RTK-Reiter</h2>
+    <p class="note" id="rtk-note-kind"></p>
+    <p class="note" id="rtk-note-filter"></p>
+    <p class="note" id="rtk-note-coverage"></p>
+  </section>
+</div>
+
+<footer class="foot">
+  <p data-i18n="ui.foot.costs">Alle Kosten in US-Dollar, so wie sie in den Quelldateien stehen.
+     Fehlende Kalendertage sind Luecken, keine Nullwerte.</p>
+  <p><span data-i18n="ui.foot.license1">Token-Usage-Dashboard, freie Software unter der</span>
+     <a href="/LICENSE" data-i18n="ui.foot.license.link">GNU AGPL, Version 3</a><span data-i18n="ui.foot.license2">. Der vollstaendige Quelltext
+     liegt im Installationsverzeichnis dieser Anwendung und auf</span>
+     <a href="https://github.com/Flexible-Universe/Token-Usage-Dashboard"
+        target="_blank" rel="noopener noreferrer" data-i18n="ui.foot.github.link">GitHub</a>.</p>
+</footer>
+
+<script src="/static/i18n/de.js"></script>
+<script src="/static/i18n/en.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
