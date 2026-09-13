@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>CCUSAGE_DATA_DIR</key>
+		<string>__DATA_DIR__</string>
+	</dict>
+	<key>Label</key>
+	<string>__LABEL_PREFIX__.ccusage-monthly</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__SCRIPT_DIR__/ccusage-export.sh</string>
+		<string>monthly</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>__DATA_DIR__/logs/launchd-monthly.err</string>
+	<key>StandardOutPath</key>
+	<string>__DATA_DIR__/logs/launchd-monthly.out</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Day</key>
+		<integer>1</integer>
+		<key>Hour</key>
+		<integer>5</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+	<key>WorkingDirectory</key>
+	<string>__DATA_DIR__</string>
+</dict>
+</plist>
