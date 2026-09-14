@@ -52,7 +52,10 @@ frontend looks the key up in the active catalogue (`static/i18n/de.js` or
 | `check.weekrun.skipped` | `missingSessions`, `missingBlocks` | `info` | `sources.py` |
 | `check.weekrun.cost_mismatch` | `blockSum`, `sessionSum` | `warn` | `sources.py` |
 | `check.agents.cost_mismatch` | `summed`, `total` | `warn` | `sources.py` |
-| `check.crosscheck.cost_mismatch` | `projectSum`, `monthlySum` | `warn` | `sources.py` |
+| `check.crosscheck.projects_days_missing` | `dates` | `warn` | `sources.py` |
+| `check.crosscheck.monthly_days_missing` | `dates` | `warn` | `sources.py` |
+| `check.crosscheck.skipped` | -- | `info` | `sources.py` |
+| `check.crosscheck.cost_mismatch` | `projectSum`, `monthlySum`, `dates` | `warn` | `sources.py` |
 | `check.rtk.month_mismatch` | `date`, `file`, `month` | `warn` | `sources.py` |
 | `check.rtk.duplicate_date` | `date`, `files` | `warn` | `sources.py` |
 
@@ -103,7 +106,10 @@ The result also counts along: `filesFound`, `filesAccepted`, `filesRejected`,
 
 **Project files against their `totals`.** Cost and all token fields.
 
-**Session files against their `totals`.** Cost.
+**Session files against their `totals`.** Cost. Each file is checked before
+sessions with the same `sessionId` are deduplicated across weekly files. The
+deduplication is part of building the archive view; it does not change whether
+an individual source file agrees with its own `totals`.
 
 **Single block.** `tokenCounts` against `totalTokens`, gaps excluded.
 
@@ -120,9 +126,15 @@ The case arises when the weekly run aborts after the blocks.
 **`agents[]` against the daily value.** Sum of `agents[].totalCost` against
 the day's `totalCost`.
 
-**Projects against the monthly file.** Per shared month: sum of the project
-days against the sum of the days from the monthly file. Two separate export
-runs describing the same period — if they differ, one of them is wrong.
+**Projects against the monthly file.** Project files contain Claude only,
+whereas monthly files can contain several agents. The comparison therefore
+uses only the Claude share of the monthly file. It comes from `agents[]` when
+available and otherwise from the existing model-prefix heuristic.
+
+Coverage and cost are separate findings. Missing days are reported for either
+source. Costs are compared per shared day, and a single monthly message lists
+only the shared days whose costs differ. If a paid monthly row cannot be split
+by agent, the cross-check is visibly skipped with level `info`.
 
 **RTK.** This source has no `totals`, no cost and no second export run to put
 anything up against. What is checked instead are the two promises that
@@ -146,7 +158,10 @@ run), `agents`, `kreuzpruefung` (cross-check), `rtk`.
 | `source.file.unreadable` (file unreadable) | export aborted, JSON incomplete | look at `logs/<run>.log`, repeat the run |
 | `check.file.totals_missing` (field `totals` missing) | older file, or a source without `totals` | normal for `blocks/` and `rtk/`, otherwise check |
 | `check.day.token_sum_mismatch` (token sum differs) | `ccusage` exported inconsistently | re-export the month |
-| `check.crosscheck.cost_mismatch` (project sum vs. monthly-file sum) | two export runs at different times | repeat the `daily` run, which recreates both files |
+| `check.crosscheck.projects_days_missing` | project export started after old JSONL source data had expired | the gap is historical; restore it from a backup if one exists |
+| `check.crosscheck.monthly_days_missing` | monthly export is incomplete | repeat the `daily` run |
+| `check.crosscheck.cost_mismatch` | Claude costs differ on days present in both exports | repeat the `daily` run; for an old partial day, restore from a backup if possible |
+| `check.crosscheck.skipped` | monthly costs cannot be split into Claude and other agents | re-export the month with model or agent breakdowns |
 | `check.weekrun.skipped` (cross-check skipped, `info`) | weekly run aborted after the blocks | look at `logs/weekly.log`, repeat the weekly run |
 | `check.rtk.duplicate_date` (date occurs more than once) | `rtk-merge.py` wrote two monthly files with the same day | look at the affected file, repeat the rtk run |
 

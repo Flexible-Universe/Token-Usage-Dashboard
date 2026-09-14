@@ -50,6 +50,9 @@ MESSAGE_CODES = frozenset({
     "check.weekrun.skipped",
     "check.weekrun.cost_mismatch",
     "check.agents.cost_mismatch",
+    "check.crosscheck.projects_days_missing",
+    "check.crosscheck.monthly_days_missing",
+    "check.crosscheck.skipped",
     "check.crosscheck.cost_mismatch",
     "check.rtk.month_mismatch",
     "check.rtk.duplicate_date",
@@ -264,6 +267,7 @@ def load_sessions(directory: Path) -> dict:
     merged: dict[str, dict] = {}
     for path, info, entries in pairs:
         count = 0
+        summed_cost = 0.0
         for index, raw in enumerate(entries):
             if not isinstance(raw, dict):
                 continue
@@ -289,7 +293,9 @@ def load_sessions(directory: Path) -> dict:
             _normalize_common(raw, row)
             merged[session_id] = row
             count += 1
+            summed_cost += row["totalCost"]
         info["rows"] = count
+        info["summedCost"] = summed_cost
 
     rows = list(merged.values())
     labels = assign_labels(sorted({r["project"] for r in rows}))
@@ -479,6 +485,30 @@ def _sum_field(rows: list[dict], field: str):
     return sum(r[field] for r in rows)
 
 
+def _claude_cost(day: dict) -> float | None:
+    if day.get("agentBreakdowns"):
+        if abs(sum(a["totalCost"] for a in day["agentBreakdowns"])
+               - day["totalCost"]) > loader.COST_TOLERANCE:
+            return None
+        return sum(a["totalCost"] for a in day["agentBreakdowns"]
+                   if a["agent"] == "claude")
+    if day.get("modelBreakdowns"):
+        if abs(sum(b["cost"] for b in day["modelBreakdowns"])
+               - day["totalCost"]) > loader.COST_TOLERANCE:
+            return None
+        return sum(b["cost"] for b in day["modelBreakdowns"]
+                   if b["agent"] == "claude")
+    return None
+
+
+def _has_claude_breakdown(day: dict) -> bool | None:
+    if day.get("agentBreakdowns"):
+        return any(a["agent"] == "claude" for a in day["agentBreakdowns"])
+    if day.get("modelBreakdowns"):
+        return any(b["agent"] == "claude" for b in day["modelBreakdowns"])
+    return None
+
+
 def check_extras(extras: dict, days: list[dict]) -> dict:
     """Plausibilitaet der Zusatzquellen. Ergebnis geht in den Statusbereich."""
     issues: list[dict] = []
@@ -520,9 +550,7 @@ def check_extras(extras: dict, days: list[dict]) -> dict:
     for info in extras["sessions"]["files"]:
         if not info["accepted"] or not info["hasTotals"]:
             continue
-        rows = [r for r in extras["sessions"]["rows"]
-                if r["sourceFile"] == info["name"]]
-        summed_cost = _sum_field(rows, "totalCost")
+        summed_cost = info["summedCost"]
         if abs(summed_cost - info["totals"]["totalCost"]) > tol:
             issues.append({
                 "level": "warn", "scope": "sessions", "key": info["name"],
@@ -588,16 +616,56 @@ def check_extras(extras: dict, days: list[dict]) -> dict:
 
     # Kreuzpruefung: Projekte gegen Monatsdatei, nur fuer gemeinsame Monate
     project_months = {r["month"] for r in extras["projects"]["rows"]}
+    project_months.update(
+        f["name"][:7] for f in extras["projects"]["files"] if f["accepted"]
+    )
     day_months = {d["month"] for d in days}
     for month in sorted(project_months & day_months):
-        left = sum(r["totalCost"] for r in extras["projects"]["rows"]
-                   if r["month"] == month)
-        right = sum(d["totalCost"] for d in days if d["month"] == month)
-        if abs(left - right) > tol:
+        month_days = [d for d in days if d["month"] == month]
+        if any(_claude_cost(d) is None and abs(d["totalCost"]) > tol
+               for d in month_days):
+            issues.append({
+                "level": "info", "scope": "kreuzpruefung", "key": month,
+                "code": "check.crosscheck.skipped", "params": {},
+            })
+            continue
+        project_costs: dict[str, float] = {}
+        for row in extras["projects"]["rows"]:
+            if row["month"] == month:
+                project_costs[row["date"]] = (
+                    project_costs.get(row["date"], 0.0) + row["totalCost"]
+                )
+        monthly_costs = {
+            d["date"]: _claude_cost(d) or 0.0
+            for d in month_days if _has_claude_breakdown(d)
+        }
+        missing_projects = sorted(monthly_costs.keys() - project_costs.keys())
+        if missing_projects:
+            issues.append({
+                "level": "warn", "scope": "kreuzpruefung", "key": month,
+                "code": "check.crosscheck.projects_days_missing",
+                "params": {"dates": missing_projects},
+            })
+        missing_monthly = sorted(project_costs.keys() - monthly_costs.keys())
+        if missing_monthly:
+            issues.append({
+                "level": "warn", "scope": "kreuzpruefung", "key": month,
+                "code": "check.crosscheck.monthly_days_missing",
+                "params": {"dates": missing_monthly},
+            })
+        differing_dates = [
+            day for day in sorted(monthly_costs.keys() & project_costs.keys())
+            if abs(project_costs[day] - monthly_costs[day]) > tol
+        ]
+        if differing_dates:
             issues.append({
                 "level": "warn", "scope": "kreuzpruefung", "key": month,
                 "code": "check.crosscheck.cost_mismatch",
-                "params": {"projectSum": left, "monthlySum": right},
+                "params": {
+                    "projectSum": sum(project_costs[d] for d in differing_dates),
+                    "monthlySum": sum(monthly_costs[d] for d in differing_dates),
+                    "dates": differing_dates,
+                },
             })
 
     # RTK: Monatszuordnung und Eindeutigkeit der Tage. Die Quelle hat kein

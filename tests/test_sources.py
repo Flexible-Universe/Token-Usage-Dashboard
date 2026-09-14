@@ -578,6 +578,209 @@ class CheckExtrasTests(unittest.TestCase):
             issues = sources.check_extras(extras, days)["issues"]
             self.assertTrue(any(i["scope"] == "kreuzpruefung" for i in issues))
 
+    def test_kreuzpruefung_vergleicht_projekte_nur_mit_claude(self):
+        with TemporaryDirectory() as tmp:
+            claude = [breakdown("claude-opus-5", 1, 2, 3, 4, 5.0)]
+            codex = [breakdown("gpt-5.6-sol", 1, 2, 3, 4, 2.0)]
+            write_projects(Path(tmp), "2026-09", {
+                "-a-b": [project_day("2026-09-01", "-a-b", claude)],
+            })
+            raw = new_day(
+                "2026-09-01", claude + codex,
+                agents=("claude", "codex"),
+                agent_rows=[("claude", claude), ("codex", codex)],
+            )
+            days = [loader.normalize_day(raw, "2026-09.json")]
+            issues = sources.check_extras(
+                sources.load_extras(Path(tmp)), days,
+            )["issues"]
+        self.assertEqual(
+            [i for i in issues if i["scope"] == "kreuzpruefung"], [],
+        )
+
+    def test_kreuzpruefung_nutzt_modellheuristik_und_nennt_nur_abweichende_tage(self):
+        with TemporaryDirectory() as tmp:
+            claude_five = [breakdown("claude-opus-5", 1, 2, 3, 4, 5.0)]
+            claude_nine = [breakdown("claude-opus-5", 1, 2, 3, 4, 9.0)]
+            codex = [breakdown("gpt-5.6-sol", 1, 2, 3, 4, 2.0)]
+            write_projects(Path(tmp), "2026-09", {
+                "-a-b": [
+                    project_day("2026-09-01", "-a-b", claude_five),
+                    project_day("2026-09-02", "-a-b", claude_five),
+                ],
+            })
+            days = [
+                loader.normalize_day(
+                    new_day("2026-09-01", claude_five + codex),
+                    "2026-09.json",
+                ),
+                loader.normalize_day(
+                    new_day("2026-09-02", claude_nine), "2026-09.json",
+                ),
+            ]
+            issues = sources.check_extras(
+                sources.load_extras(Path(tmp)), days,
+            )["issues"]
+        mismatch = [
+            i for i in issues if i["code"] == "check.crosscheck.cost_mismatch"
+        ]
+        self.assertEqual(len(mismatch), 1)
+        self.assertEqual(mismatch[0]["params"], {
+            "projectSum": 5.0,
+            "monthlySum": 9.0,
+            "dates": ["2026-09-02"],
+        })
+
+    def test_kreuzpruefung_meldet_im_projektarchiv_fehlende_tage(self):
+        with TemporaryDirectory() as tmp:
+            bd = [breakdown("claude-opus-5", 1, 2, 3, 4, 5.0)]
+            write_projects(Path(tmp), "2026-09", {
+                "-a-b": [project_day("2026-09-02", "-a-b", bd)],
+            })
+            days = [
+                loader.normalize_day(new_day("2026-09-01", bd), "2026-09.json"),
+                loader.normalize_day(new_day("2026-09-02", bd), "2026-09.json"),
+            ]
+            issues = sources.check_extras(
+                sources.load_extras(Path(tmp)), days,
+            )["issues"]
+        missing = [
+            i for i in issues
+            if i["code"] == "check.crosscheck.projects_days_missing"
+        ]
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0]["params"]["dates"], ["2026-09-01"])
+        self.assertFalse(any(
+            i["code"] == "check.crosscheck.cost_mismatch" for i in issues
+        ))
+
+    def test_kreuzpruefung_erkennt_leere_projektdatei_als_abdeckungsluecke(self):
+        with TemporaryDirectory() as tmp:
+            write_projects(Path(tmp), "2026-09", {})
+            bd = [breakdown("claude-opus-5", 1, 2, 3, 4, 5.0)]
+            days = [
+                loader.normalize_day(new_day("2026-09-01", bd), "2026-09.json"),
+            ]
+            issues = sources.check_extras(
+                sources.load_extras(Path(tmp)), days,
+            )["issues"]
+        missing = [
+            i for i in issues
+            if i["code"] == "check.crosscheck.projects_days_missing"
+        ]
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0]["params"]["dates"], ["2026-09-01"])
+
+    def test_kreuzpruefung_meldet_in_monatsdatei_fehlende_tage(self):
+        with TemporaryDirectory() as tmp:
+            bd = [breakdown("claude-opus-5", 1, 2, 3, 4, 5.0)]
+            write_projects(Path(tmp), "2026-09", {
+                "-a-b": [
+                    project_day("2026-09-01", "-a-b", bd),
+                    project_day("2026-09-02", "-a-b", bd),
+                ],
+            })
+            days = [
+                loader.normalize_day(new_day("2026-09-02", bd), "2026-09.json"),
+            ]
+            issues = sources.check_extras(
+                sources.load_extras(Path(tmp)), days,
+            )["issues"]
+        missing = [
+            i for i in issues
+            if i["code"] == "check.crosscheck.monthly_days_missing"
+        ]
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0]["params"]["dates"], ["2026-09-01"])
+
+    def test_kreuzpruefung_wird_ohne_aufteilbare_monatskosten_sichtbar_uebersprungen(self):
+        with TemporaryDirectory() as tmp:
+            bd = [breakdown("claude-opus-5", 1, 2, 3, 4, 5.0)]
+            write_projects(Path(tmp), "2026-09", {
+                "-a-b": [project_day("2026-09-01", "-a-b", bd)],
+            })
+            raw = new_day("2026-09-01", [])
+            raw["totalCost"] = 5.0
+            days = [loader.normalize_day(raw, "2026-09.json")]
+            issues = sources.check_extras(
+                sources.load_extras(Path(tmp)), days,
+            )["issues"]
+        crosscheck = [i for i in issues if i["scope"] == "kreuzpruefung"]
+        self.assertEqual(len(crosscheck), 1)
+        self.assertEqual(crosscheck[0]["level"], "info")
+        self.assertEqual(crosscheck[0]["code"], "check.crosscheck.skipped")
+
+    def test_kreuzpruefung_ueberspringt_unvollstaendige_agentenaufteilung(self):
+        with TemporaryDirectory() as tmp:
+            claude = [breakdown("claude-opus-5", 1, 2, 3, 4, 5.0)]
+            write_projects(Path(tmp), "2026-09", {
+                "-a-b": [project_day("2026-09-01", "-a-b", claude)],
+            })
+            raw = new_day(
+                "2026-09-01", claude,
+                agent_rows=[("claude", claude)],
+            )
+            raw["totalCost"] = 10.0
+            days = [loader.normalize_day(raw, "2026-09.json")]
+            issues = sources.check_extras(
+                sources.load_extras(Path(tmp)), days,
+            )["issues"]
+        crosscheck = [i for i in issues if i["scope"] == "kreuzpruefung"]
+        self.assertEqual(len(crosscheck), 1)
+        self.assertEqual(crosscheck[0]["level"], "info")
+        self.assertEqual(crosscheck[0]["code"], "check.crosscheck.skipped")
+
+    def test_kreuzpruefung_verwechselt_kleine_kosten_nicht_mit_fehlendem_tag(self):
+        with TemporaryDirectory() as tmp:
+            bd = [breakdown("claude-haiku-4-5", 1, 2, 3, 4, 0.005)]
+            write_projects(Path(tmp), "2026-09", {
+                "-a-b": [project_day("2026-09-01", "-a-b", bd)],
+            })
+            days = [
+                loader.normalize_day(new_day("2026-09-01", bd), "2026-09.json"),
+            ]
+            issues = sources.check_extras(
+                sources.load_extras(Path(tmp)), days,
+            )["issues"]
+        self.assertEqual(
+            [i for i in issues if i["scope"] == "kreuzpruefung"], [],
+        )
+
+    def test_sessiondatei_wird_vor_wochenuebergreifendem_deduplizieren_geprueft(self):
+        """A later copy of a session does not invalidate the older file."""
+        with TemporaryDirectory() as tmp:
+            bd = [breakdown("claude-opus-5", 1, 2, 3, 4, 1.0)]
+            write_week(Path(tmp), "sessions", "2026-W35", "sessions", [
+                _session("s1", "-a-b", "2026-08-20T00:00:00.000Z",
+                         "2026-08-20T01:00:00.000Z", 1.0, bd),
+            ], totals={"totalCost": 1.0})
+            write_week(Path(tmp), "sessions", "2026-W36", "sessions", [
+                _session("s1", "-a-b", "2026-08-20T00:00:00.000Z",
+                         "2026-08-20T02:00:00.000Z", 9.0, bd),
+            ], totals={"totalCost": 9.0})
+            issues = sources.check_extras(
+                sources.load_extras(Path(tmp)), [],
+            )["issues"]
+        self.assertEqual([i for i in issues if i["scope"] == "sessions"], [])
+
+    def test_sessiondatei_mit_falschen_totals_bleibt_ein_befund(self):
+        with TemporaryDirectory() as tmp:
+            bd = [breakdown("claude-opus-5", 1, 2, 3, 4, 1.0)]
+            write_week(Path(tmp), "sessions", "2026-W36", "sessions", [
+                _session("s1", "-a-b", "2026-08-20T00:00:00.000Z",
+                         "2026-08-20T01:00:00.000Z", 1.0, bd),
+            ], totals={"totalCost": 9.0})
+            issues = sources.check_extras(
+                sources.load_extras(Path(tmp)), [],
+            )["issues"]
+        session_issues = [i for i in issues if i["scope"] == "sessions"]
+        self.assertEqual(len(session_issues), 1)
+        self.assertEqual(session_issues[0]["code"],
+                         "check.sessions.cost_mismatch")
+        self.assertEqual(session_issues[0]["params"], {
+            "summed": 1.0, "total": 9.0,
+        })
+
     def test_bloecke_gegen_sessions(self):
         with TemporaryDirectory() as tmp:
             bd = [breakdown("claude-opus-5", 1, 2, 3, 4, 5.0)]

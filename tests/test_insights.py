@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 
 from tests.helpers import BASE_DIR, breakdown, require_real_data  # noqa: F401  - setzt sys.path
 
@@ -556,9 +559,15 @@ class RealDataReferenceTests(unittest.TestCase):
         bloecke = [b for b in roh if not b.get("isGap")]
         luecken = [b for b in roh if b.get("isGap")]
 
-        rows = [r for r in self.extras["blocks"]["rows"]
-                if r["sourceFile"] == "2026-W36.json"]
-        result = insights.block_insights(rows)
+        # Load this source file in isolation. In the archive view, a later
+        # weekly file legitimately replaces overlapping IDs and would make a
+        # comparison with the complete raw W36 file invalid.
+        with tempfile.TemporaryDirectory() as tmp:
+            block_dir = Path(tmp) / "blocks"
+            block_dir.mkdir()
+            shutil.copy2(datei, block_dir / datei.name)
+            rows = sources.load_blocks(Path(tmp))["rows"]
+            result = insights.block_insights(rows)
 
         self.assertEqual(result["kpis"]["blockCount"], len(bloecke))
         self.assertEqual(result["kpis"]["gapCount"], len(luecken))
@@ -596,33 +605,35 @@ class RealDataReferenceTests(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
 
     def test_plausibilitaet_meldet_nur_den_bekannten_august_ruecksschritt(self):
-        """Die Plausibilitaetspruefung soll leer sein - bis auf einen Fall.
+        """Only the two known facets of the August archive gap are reported.
 
-        logs/monthly.log haelt fest, dass der monatliche Export fuer August
-        2026 mit "RUECKSCHRITT" abgebrochen wurde: die JSONL-Quellen waren zu
-        diesem Zeitpunkt bereits abgeschnitten, projects/2026-08.json wurde
-        trotzdem mit dem verkuerzten Stand (40 Zeilen, 4049.94 $) geschrieben,
-        waehrend die Monatsdatei 2026-08.json beim alten, vollstaendigen Stand
-        (31 Tage, 4739.12 $) blieb. Die Kreuzpruefung meldet genau diese eine
-        bekannte Abweichung. Jede weitere oder andere Meldung ist ein neuer,
-        bisher unbekannter Befund und soll den Test scheitern lassen.
+        logs/monthly.log records that the August 2026 monthly export was
+        rejected after the JSONL sources had already been truncated. The
+        project archive consequently lacks August 1-3 and contains only
+        partial Claude costs for August 4-5. Any other finding is new and
+        must fail this reference test.
         """
         dataset = loader.load_directory(self.directory)
         result = sources.check_extras(self.extras, dataset["days"])
         self.assertEqual(
-            len(result["issues"]), 1,
-            "Erwartet wird ausschliesslich der dokumentierte August-"
-            "Ruecksschritt aus logs/monthly.log, keine weitere Abweichung.",
+            len(result["issues"]), 2,
+            "Only the documented August archive gap is expected.",
         )
-        issue = result["issues"][0]
+        by_code = {issue["code"]: issue for issue in result["issues"]}
+        coverage = by_code["check.crosscheck.projects_days_missing"]
         self.assertEqual(
-            {k: issue[k] for k in ("level", "scope", "key", "code")},
-            {"level": "warn", "scope": "kreuzpruefung", "key": "2026-08",
-             "code": "check.crosscheck.cost_mismatch"})
-        # Die Rohsummen sind Gleitkommasummen; der alte Text rundete ueber
-        # f"{...:.2f}". Der Vergleich rundet jetzt an derselben Stelle.
-        self.assertAlmostEqual(issue["params"]["projectSum"], 4049.94, places=2)
-        self.assertAlmostEqual(issue["params"]["monthlySum"], 4739.12, places=2)
+            {k: coverage[k] for k in ("level", "scope", "key")},
+            {"level": "warn", "scope": "kreuzpruefung", "key": "2026-08"},
+        )
+        self.assertEqual(coverage["params"]["dates"], [
+            "2026-08-01", "2026-08-02", "2026-08-03",
+        ])
+        mismatch = by_code["check.crosscheck.cost_mismatch"]
+        self.assertEqual(mismatch["params"]["dates"], [
+            "2026-08-04", "2026-08-05",
+        ])
+        self.assertAlmostEqual(mismatch["params"]["projectSum"], 68.36, places=2)
+        self.assertAlmostEqual(mismatch["params"]["monthlySum"], 180.15, places=2)
 
 
 if __name__ == "__main__":

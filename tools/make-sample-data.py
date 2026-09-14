@@ -242,10 +242,11 @@ def schreibe_monatsdateien(out: Path, monate: list[str], heute: date,
 def schreibe_projekte(out: Path, monate: list[str],
                       tagesbreakdowns: dict[str, list[dict]],
                       rng: random.Random) -> list[Path]:
-    """Projektdateien fuer die juengsten Monate.
+    """Write Claude project files for the most recent months.
 
-    Jeder Modellposten eines Tages geht an genau ein Projekt. So bleibt die
-    Summe der Projekte gleich der Summe der Monatsdatei.
+    Each Claude model entry for a day goes to exactly one project. Codex
+    entries remain exclusive to the unified monthly files, matching the
+    scope of ``ccusage claude daily --instances``.
     """
     pfade = []
     for monat in monate[-PROJEKTMONATE:]:
@@ -253,7 +254,11 @@ def schreibe_projekte(out: Path, monate: list[str],
         eintraege = []
         for datum in sorted(d for d in tagesbreakdowns if d.startswith(monat)):
             verteilt: dict[str, list[dict]] = {}
-            for position, b in enumerate(tagesbreakdowns[datum]):
+            claude_breakdowns = [
+                b for b in tagesbreakdowns[datum]
+                if _agent(b["modelName"]) == "claude"
+            ]
+            for position, b in enumerate(claude_breakdowns):
                 schluessel = PROJEKTE[(rng.randrange(len(PROJEKTE)) + position)
                                       % len(PROJEKTE)]
                 verteilt.setdefault(schluessel, []).append(b)
