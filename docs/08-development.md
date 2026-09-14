@@ -7,8 +7,11 @@ python3 -m unittest discover -s tests -t .
 ```
 
 Always from the project root, because that is where the modules lie on the
-search path. Currently 219 tests, or 240 with a real data directory named in
-`TOKEN_DASHBOARD_REAL_DATA`.
+search path. There are currently 229 tests with five skips: four skipped
+real-data test classes and one platform-specific installation check. With the
+project's real data directory named in `TOKEN_DASHBOARD_REAL_DATA`, the real
+files add data-driven reference cases and the result is 250 tests with only
+the platform-specific check skipped.
 
 | File | Covers |
 |---|---|

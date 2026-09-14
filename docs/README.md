@@ -15,7 +15,8 @@ way it does, read chapters 5 and 6.
 | [07 Installation](07-installation.md) | Setup on a fresh machine, step by step |
 | [08 Development](08-development.md) | Tests, conventions, how changes are made |
 
-The user interface itself is in German; this documentation is not.
+The user interface supports German and English; this documentation is in
+English.
 
 ## The three sentences that explain everything else
 

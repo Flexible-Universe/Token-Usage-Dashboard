@@ -54,17 +54,17 @@ an environment, and that it still starts in five years.
                  static/                          tabs, filters, charts
 ```
 
-| File | Purpose | Lines |
-|---|---|---|
-| `app.py` | Entry point, HTTP server, routing, `DataStore` | ~290 |
-| `loader.py` | Configuration, reading monthly files, plausibility | ~440 |
-| `metrics.py` | Metrics from the daily data | ~460 |
-| `sources.py` | Extra sources `projects/`, `blocks/`, `sessions/`, `rtk/` | ~600 |
-| `insights.py` | Metrics for the extra sources | ~400 |
-| `static/index.html` | Skeleton of the user interface | 339 |
-| `static/app.js` | All frontend logic | 1224 |
-| `static/style.css` | Styling | 195 |
-| `tests/` | 202 tests | ~2600 |
+| File | Purpose |
+|---|---|
+| `app.py` | Entry point, HTTP server, routing, `DataStore` |
+| `loader.py` | Configuration, reading monthly files, plausibility |
+| `metrics.py` | Metrics from the daily data |
+| `sources.py` | Extra sources `projects/`, `blocks/`, `sessions/`, `rtk/` |
+| `insights.py` | Metrics for the extra sources |
+| `static/index.html` | Skeleton of the user interface |
+| `static/app.js` | All frontend logic |
+| `static/style.css` | Styling |
+| `tests/` | Test suite described in [chapter 8](08-development.md) |
 
 ## The separation between the two module pairs
 

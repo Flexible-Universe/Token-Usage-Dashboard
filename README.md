@@ -7,16 +7,18 @@ projects, sessions and billing blocks, read from a directory of exported
 JSON files. Python 3.11+, standard library only, no build step, nothing to
 install.
 
-**The user interface is in German.** The documentation is in English; the
-labels, numbers and dates you see in the browser are German
-(`1.234,56`, `TT.MM.JJJJ`, costs in US dollars).
+**The user interface supports German and English.** The documentation is in
+English. The browser language selects the initial UI language; a selection in
+the header is remembered. Numbers and dates follow the selected language,
+while costs stay in US dollars.
 
 ![Dashboard](docs/screenshots/dashboard.png)
 
 ## Quick start
 
 ```bash
-git clone <repo> token-usage-dashboard && cd token-usage-dashboard
+git clone https://github.com/Flexible-Universe/Token-Usage-Dashboard.git token-usage-dashboard
+cd token-usage-dashboard
 python3 tools/make-sample-data.py --out sample-data
 python3 app.py
 ```
@@ -125,9 +127,9 @@ nothing about models.
 python3 -m unittest discover -s tests -t .
 ```
 
-Expected: `OK`, 202 tests. The reference tests check against a real data
-directory and are skipped as long as the environment variable
-`TOKEN_DASHBOARD_REAL_DATA` does not point at one.
+Expected: `OK`, currently 229 tests with five skips. Four real-data test
+classes are skipped as long as `TOKEN_DASHBOARD_REAL_DATA` does not point at
+a real data directory; one installation check is platform-specific.
 
 ## Contributing
 

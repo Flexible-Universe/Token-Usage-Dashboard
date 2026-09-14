@@ -30,9 +30,9 @@ Commit messages are in English.
 **No umlauts** in source code, comments and Markdown. Use `ue`, `ae`, `oe`,
 `ss` instead.
 
-**All visible texts in German.** Numbers with a decimal comma and a thousands
-point, dates as TT.MM.JJJJ, costs in US dollars. The documentation is in
-English.
+**All visible texts go through both language catalogues.** German and English
+must stay complete and in sync. Number and date formats follow the active
+language; costs stay in US dollars. The documentation is in English.
 
 **Missing calendar days are gaps, not zeros.** Means and medians run over
 days with data only. Time series run over all calendar days and carry `null`

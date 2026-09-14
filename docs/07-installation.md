@@ -28,7 +28,7 @@ standard library only.
 ### 1. Get the repository
 
 ```bash
-git clone <url> token-usage-dashboard
+git clone https://github.com/Flexible-Universe/Token-Usage-Dashboard.git token-usage-dashboard
 cd token-usage-dashboard
 ```
 
@@ -129,10 +129,10 @@ With `open_browser = true`, the browser opens by itself after a short delay.
 python3 -m unittest discover -s tests -t .
 ```
 
-Expected: `OK`, 202 tests. Some of the tests check against real monthly files
-and are skipped when no data directory is named — the run is green even then,
-but covers less. The skip note says so; a cross-check that never ran is never
-left unmentioned.
+Expected: `OK`, currently 229 tests with five skips. Four real-data test
+classes are skipped when no data directory is named, and one installation
+check is platform-specific — the run is green even then, but covers less. The
+skip note says so; a cross-check that never ran is never left unmentioned.
 
 To have those reference tests run too, name the directory through the
 environment variable `TOKEN_DASHBOARD_REAL_DATA` — not through `config.toml`:
@@ -142,9 +142,11 @@ TOKEN_DASHBOARD_REAL_DATA="$HOME/Library/Application Support/Claude-Code-Usage" 
   python3 -m unittest discover -s tests -t .
 ```
 
-Expected then: `OK`, 223 tests. The reference values are tied to one specific
-data directory; on somebody else's machine they fail, and that is not a fault
-of the dashboard. There the variable stays unset.
+Expected for the project's reference directory: `OK`, currently 250 tests
+with one optional check skipped. The real files add data-driven reference
+cases and execute the reference test classes that are skipped without the
+variable. If the directory is not suitable reference data, leave the variable
+unset.
 
 ## Level B — set up the export chain (macOS)
 
