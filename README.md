@@ -1,4 +1,4 @@
-# Token Usage Dashboard
+# Token Usage Dashboard (only for macOS)
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
