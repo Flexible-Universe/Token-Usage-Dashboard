@@ -24,6 +24,7 @@ LABEL_PREFIX=""
 WITH_LAUNCHAGENTS=0
 FORCE=0
 DRY_RUN=0
+DEMO_MODE=0
 
 SKRIPTE=(ccusage-export.sh rtk-export.sh ccusage-check.py ccusage-merge.py rtk-merge.py)
 JOBS=(ccusage-daily ccusage-weekly ccusage-monthly rtk-daily)
@@ -60,12 +61,15 @@ Optionen:
   --force               Ueberschreibt abweichende Skripte unter <daten>/bin
                         mit dem Stand des Repositories.
   --dry-run             Zeigt nur, was geschehen wuerde. Aendert nichts.
+  --demo                Aktiviert den Demo-Modus und erzeugt Beispieldaten.
+                        Sinnvoll, wenn weder ccusage noch rtk installiert ist.
   -h, --help            Diese Hilfe.
 
 Ohne --with-launchagents greift das Skript nicht in launchd ein.
 
 Beispiele:
   ./install.sh
+  ./install.sh --demo
   ./install.sh --with-launchagents --label-prefix com.beispiel
   ./install.sh --with-launchagents --dry-run
 ENDE
@@ -78,6 +82,7 @@ while [ $# -gt 0 ]; do
         --with-launchagents) WITH_LAUNCHAGENTS=1 ;;
         --force)             FORCE=1 ;;
         --dry-run)           DRY_RUN=1 ;;
+        --demo)              DEMO_MODE=1 ;;
         -h|--help)           hilfe; exit 0 ;;
         --label-prefix)
             [ $# -ge 2 ] || fehler "--label-prefix braucht einen Wert."
@@ -124,21 +129,57 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' \
     || fehler "python3 $PY_VERSION ist zu alt, gebraucht wird 3.11 oder neuer."
 tat "python3 $PY_VERSION"
 
-if [ "$WITH_LAUNCHAGENTS" -eq 1 ] && [ "$(uname -s)" != "Darwin" ]; then
-    fehler "--with-launchagents gibt es nur auf macOS; hier laeuft $(uname -s)." 2
-fi
-
 if [ "$(uname -s)" != "Darwin" ]; then
     hinweis "Die Exportkette laeuft nur auf macOS. Die Skripte werden trotzdem abgelegt, lassen sich hier aber nicht ausfuehren."
 fi
 
+LIVE_WERKZEUGE=0
 for werkzeug in ccusage rtk; do
     if command -v "$werkzeug" >/dev/null 2>&1; then
         tat "$werkzeug gefunden: $(command -v "$werkzeug")"
+        LIVE_WERKZEUGE=$((LIVE_WERKZEUGE + 1))
     else
         hinweis "$werkzeug ist nicht im Pfad. Das Dashboard laeuft trotzdem, es zeigt dann nur, was schon im Datenverzeichnis liegt."
     fi
 done
+
+if [ "$LIVE_WERKZEUGE" -eq 0 ]; then
+    printf '\n  Fuer Live-Daten muss mindestens eines der Programme ccusage oder RTK installiert sein.\n'
+    if [ "$DEMO_MODE" -eq 1 ]; then
+        tat "Demo-Modus aktiviert (--demo)."
+    else
+        while true; do
+            printf '  [a] Installation abbrechen  [d] Demo-Modus aktivieren: '
+            if ! IFS= read -r antwort; then
+                fehler "Keine Auswahl moeglich. Installation abgebrochen; fuer den Demo-Modus erneut mit --demo aufrufen." 2
+            fi
+            case "$antwort" in
+                a|A) fehler "Installation auf Wunsch abgebrochen." 2 ;;
+                d|D) DEMO_MODE=1; tat "Demo-Modus aktiviert."; break ;;
+                *) printf '  Bitte a oder d eingeben.\n' ;;
+            esac
+        done
+    fi
+fi
+
+if [ "$DEMO_MODE" -eq 1 ] && [ "$WITH_LAUNCHAGENTS" -eq 1 ]; then
+    hinweis "launchd-Jobs werden im Demo-Modus uebersprungen, weil Demo-Daten keine Live-Exporte brauchen."
+    WITH_LAUNCHAGENTS=0
+fi
+
+if [ "$WITH_LAUNCHAGENTS" -eq 1 ] && [ "$(uname -s)" != "Darwin" ]; then
+    fehler "--with-launchagents gibt es nur auf macOS; hier laeuft $(uname -s)." 2
+fi
+
+if [ "$DEMO_MODE" -eq 1 ]; then
+    for vorhandene_datendatei in "$DATA_DIR"/*.json \
+            "$DATA_DIR"/projects/*.json "$DATA_DIR"/sessions/*.json \
+            "$DATA_DIR"/blocks/*.json "$DATA_DIR"/rtk/*.json; do
+        if [ -f "$vorhandene_datendatei" ]; then
+            fehler "Demo-Modus abgebrochen: In $DATA_DIR liegen bereits Datendateien. Bitte ein leeres --data-dir verwenden."
+        fi
+    done
+fi
 
 # Ein cloud-synchronisierter Ablageort ist der Fehler, der sich spaeter als
 # Rechtefehler des launchd-Prozesses tarnt und wie ein Programmfehler aussieht.
@@ -165,6 +206,16 @@ for unter in "" "${UNTERVERZEICHNISSE[@]}"; do
         tat "angelegt: $ziel"
     fi
 done
+
+if [ "$DEMO_MODE" -eq 1 ]; then
+    schritt "Demo-Daten"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        wuerde "Demo-Daten erzeugen: $DATA_DIR"
+    else
+        python3 "$REPO_DIR/tools/make-sample-data.py" --out "$DATA_DIR" >/dev/null
+        tat "Demo-Daten erzeugt: $DATA_DIR"
+    fi
+fi
 
 # --- Exportskripte --------------------------------------------------------
 

@@ -163,6 +163,12 @@ export scripts to `<data>/bin`, creates `config.toml` from
 `config.example.toml`, fills in the four launchd templates and loads them.
 `--dry-run` shows beforehand what would happen, without changing anything.
 
+For live data, at least one of `ccusage` or `rtk` must be installed. If the
+script finds neither, it stops before creating files and offers either to
+abort or to activate demo mode. Demo mode writes the generated sample data to
+the selected data directory and skips launchd jobs. For unattended setup, use
+`./install.sh --demo`; the target must not contain existing dashboard data.
+
 What it does not overwrite: an existing `config.toml`, and scripts under
 `<data>/bin` that differ from the repository. It reports both and leaves them
 alone; `--force` brings the scripts up to date.
