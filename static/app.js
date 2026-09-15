@@ -55,6 +55,7 @@ const state = {
 };
 
 const charts = {};
+let metricsRequestId = 0;
 
 /* ---------- Formatierung ---------- */
 function euroLessDollar(value, digits) {
@@ -224,7 +225,16 @@ async function loadAll(reload) {
 }
 
 async function loadMetrics(reload) {
-  state.metrics = await getJSON('/api/metrics' + apiQuery(reload));
+  const requestId = ++metricsRequestId;
+  let result;
+  try {
+    result = await getJSON('/api/metrics' + apiQuery(reload));
+  } catch (error) {
+    if (requestId !== metricsRequestId) return;
+    throw error;
+  }
+  if (requestId !== metricsRequestId) return;
+  state.metrics = result;
   renderMetrics();
 }
 
@@ -920,9 +930,9 @@ function buildPeriodOptions(data) {
 }
 
 function toggleRangeInputs() {
-  const visible = state.period === 'custom';
-  document.getElementById('range-control').hidden = !visible;
-  document.getElementById('range-control-to').hidden = !visible;
+  const disabled = state.period !== 'custom';
+  document.getElementById('date-from').disabled = disabled;
+  document.getElementById('date-to').disabled = disabled;
 }
 
 function buildModelFilter(data) {
@@ -1407,12 +1417,16 @@ document.getElementById('period').addEventListener('change', (event) => {
   toggleRangeInputs();
   refreshMetrics();
 });
-document.getElementById('date-from').addEventListener('change', (event) => {
-  state.from = event.target.value; refreshMetrics();
-});
-document.getElementById('date-to').addEventListener('change', (event) => {
-  state.to = event.target.value; refreshMetrics();
-});
+function refreshCustomRange() {
+  const from = document.getElementById('date-from').value;
+  const to = document.getElementById('date-to').value;
+  state.from = from;
+  state.to = to;
+  if (!from || !to || from > to) return;
+  refreshMetrics();
+}
+document.getElementById('date-from').addEventListener('input', refreshCustomRange);
+document.getElementById('date-to').addEventListener('input', refreshCustomRange);
 document.getElementById('measure').addEventListener('change', (event) => {
   state.measure = event.target.value;
   if (state.metrics) renderCharts(state.metrics);

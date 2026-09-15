@@ -103,6 +103,10 @@ class ServerCase(unittest.TestCase):
     def test_api_metrics_with_date_filter(self):
         payload = get(self.base + "/api/metrics?from=2026-05-01&to=2026-05-31")
         self.assertAlmostEqual(payload["summary"]["totalCost"], 16.0)
+        self.assertEqual(
+            payload["dailySeries"]["labels"],
+            ["2026-05-01", "2026-05-02", "2026-05-03"],
+        )
 
     def test_api_metrics_with_model_filter(self):
         payload = get(self.base + "/api/metrics?models=claude-opus-5,gpt-5.6-sol")

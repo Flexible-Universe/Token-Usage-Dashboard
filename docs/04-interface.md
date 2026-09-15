@@ -34,9 +34,9 @@ the German habit.
 ## Filters
 
 **Period.** A select field with "Alle Monate" (all months), one entry per
-month present, and "Freier Datumsbereich" (custom date range). Only the last
-choice reveals the two date fields, whose bounds are set to the range of data
-present.
+month present, and "Freier Datumsbereich" (custom date range). The two date
+fields remain visible but are enabled only for the custom range. Their bounds
+are set to the range of data present.
 
 **Quantity.** Switches between cost in US dollars and tokens. It applies to
 the charts that carry both quantities.
