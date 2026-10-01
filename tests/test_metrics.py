@@ -131,6 +131,41 @@ class MissingDayTests(unittest.TestCase):
         self.assertEqual(data[:4], [None] * 4)
         self.assertAlmostEqual(data[4], 5.0)
 
+    def test_cumulative_curve_stops_at_end_of_shorter_month(self):
+        days = build([
+            old_day("2026-08-31", [breakdown("claude-opus-5", 0, 10, 0, 90, 5.0)]),
+            old_day("2026-09-30", [breakdown("claude-opus-5", 0, 10, 0, 90, 7.0)]),
+        ])
+        cumulative = metrics.cumulative_by_month(days)
+        self.assertEqual(len(cumulative["labels"]), 31)
+        september = cumulative["series"][1]["data"]
+        self.assertAlmostEqual(september[29], 7.0)
+        self.assertIsNone(september[30])
+
+    def test_cumulative_curve_respects_leap_year_february(self):
+        days = build([
+            old_day("2028-02-29", [breakdown("claude-opus-5", 0, 10, 0, 90, 5.0)]),
+            old_day("2027-02-28", [breakdown("claude-opus-5", 0, 10, 0, 90, 3.0)]),
+        ])
+        cumulative = metrics.cumulative_by_month(days)
+        self.assertEqual(len(cumulative["labels"]), 29)
+        february_2027, february_2028 = (s["data"] for s in cumulative["series"])
+        self.assertAlmostEqual(february_2027[27], 3.0)
+        self.assertIsNone(february_2027[28])
+        self.assertAlmostEqual(february_2028[28], 5.0)
+
+    def test_cumulative_curve_stops_after_last_day_with_data(self):
+        days = build([
+            old_day("2026-10-01", [breakdown("claude-opus-5", 0, 10, 0, 90, 5.0)]),
+            old_day("2026-10-03", [breakdown("claude-opus-5", 0, 10, 0, 90, 2.0)]),
+        ])
+        cumulative = metrics.cumulative_by_month(days)
+        self.assertEqual(len(cumulative["labels"]), 31)
+        data = cumulative["series"][0]["data"]
+        self.assertAlmostEqual(data[1], 5.0)
+        self.assertAlmostEqual(data[2], 7.0)
+        self.assertEqual(data[3:], [None] * 28)
+
 
 class MetricValueTests(unittest.TestCase):
     def setUp(self):

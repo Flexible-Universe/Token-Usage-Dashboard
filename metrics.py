@@ -158,17 +158,23 @@ def monthly_totals(days: list[dict]) -> list[dict]:
 def cumulative_by_month(days: list[dict]) -> dict:
     """Kumulierte Monatskosten, X-Achse ist der Tag im Monat."""
     months: dict[str, dict[int, float]] = {}
-    max_day = 28
     for day in days:
         months.setdefault(day["month"], {})
         months[day["month"]][day["day"]] = (
             months[day["month"]].get(day["day"], 0.0) + day["totalCost"]
         )
-        max_day = max(max_day, day["day"])
 
-    labels = list(range(1, max_day + 1))
+    lengths = {
+        month: calendar.monthrange(int(month[:4]), int(month[5:7]))[1]
+        for month in months
+    }
+    labels = list(range(1, max(lengths.values(), default=28) + 1))
     series = []
     for month in sorted(months):
+        # The curve ends on the last day with data, not on the month's last
+        # day: carrying the total forward would draw values for days that
+        # have not happened yet in the running month.
+        last_day = min(max(months[month]), lengths[month])
         running = 0.0
         seen = False
         data: list[float | None] = []
@@ -176,7 +182,8 @@ def cumulative_by_month(days: list[dict]) -> dict:
             if day_number in months[month]:
                 running += months[month][day_number]
                 seen = True
-            data.append(round(running, 6) if seen else None)
+            visible = seen and day_number <= last_day
+            data.append(round(running, 6) if visible else None)
         series.append({"month": month, "data": data})
     return {"labels": labels, "series": series}
 
