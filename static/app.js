@@ -56,6 +56,7 @@ const state = {
 
 const charts = {};
 let metricsRequestId = 0;
+const DEFAULT_RANGE_FROM = '2026-05-01';
 
 /* ---------- Formatierung ---------- */
 function euroLessDollar(value, digits) {
@@ -161,15 +162,28 @@ function apiQuery(reload) {
 function activeRange() {
   if (state.period === 'all') return { from: '', to: '' };
   if (state.period === 'custom') return { from: state.from, to: state.to };
+  return monthRange(state.period);
+}
+
+function monthRange(period) {
   // Echter Monatsletzter. Ein hart gesetzter 31. waere fuer die reine
   // Zeichenkettenfilterung harmlos, aber insights.coverage schlaegt daraus
   // einen Hinweistext und behauptete fuer April dann etwas Falsches.
-  const [year, month] = state.period.split('-').map(Number);
+  const [year, month] = period.split('-').map(Number);
   const last = new Date(year, month, 0).getDate();
   return {
-    from: `${state.period}-01`,
-    to: `${state.period}-${String(last).padStart(2, '0')}`
+    from: `${period}-01`,
+    to: `${period}-${String(last).padStart(2, '0')}`
   };
+}
+
+// The span shown for "all months" and offered as the start of a custom
+// range. Local date on purpose: the inputs show the user's calendar day.
+function defaultRange() {
+  const now = new Date();
+  const today = [now.getFullYear(), now.getMonth() + 1, now.getDate()]
+    .map((part) => String(part).padStart(2, '0')).join('-');
+  return { from: DEFAULT_RANGE_FROM, to: today };
 }
 
 async function getJSON(url) {
@@ -916,17 +930,37 @@ function buildPeriodOptions(data) {
   data.months.forEach((month) => select.add(new Option(formatMonth(month), month)));
   select.add(new Option(t('ui.filter.period.custom'), 'custom'));
   select.value = [...select.options].some((o) => o.value === previous) ? previous : 'all';
-  state.period = select.value;
-  toggleRangeInputs();
 
-  const from = document.getElementById('date-from');
-  const to = document.getElementById('date-to');
-  if (data.range.from) {
-    from.min = data.range.from; from.max = data.range.to;
-    to.min = data.range.from; to.max = data.range.to;
-    if (!state.from) { state.from = data.range.from; from.value = data.range.from; }
-    if (!state.to) { state.to = data.range.to; to.value = data.range.to; }
+  // The bounds must also admit the default range, otherwise the inputs
+  // would show it as invalid while the data starts later or ends earlier.
+  const fallback = defaultRange();
+  const min = data.range.from && data.range.from < fallback.from ? data.range.from : fallback.from;
+  const max = data.range.to && data.range.to > fallback.to ? data.range.to : fallback.to;
+  ['date-from', 'date-to'].forEach((id) => {
+    const input = document.getElementById(id);
+    input.min = min;
+    input.max = max;
+  });
+
+  // A reload or language switch rebuilds this list; a custom range the
+  // user already picked survives it.
+  if (select.value === 'custom' && state.period === 'custom' && state.from) {
+    toggleRangeInputs();
+  } else {
+    applyPeriod(select.value);
   }
+}
+
+// The inputs always show the span the period stands for, so state.from and
+// state.to hold that span too; activeRange reads them only for "custom".
+function applyPeriod(period) {
+  state.period = period;
+  const shown = period === 'all' || period === 'custom' ? defaultRange() : monthRange(period);
+  state.from = shown.from;
+  state.to = shown.to;
+  document.getElementById('date-from').value = shown.from;
+  document.getElementById('date-to').value = shown.to;
+  toggleRangeInputs();
 }
 
 function toggleRangeInputs() {
@@ -1413,8 +1447,7 @@ function renderAgents(m) {
 /* ---------- Ereignisse ---------- */
 document.getElementById('reload').addEventListener('click', () => loadAll(true));
 document.getElementById('period').addEventListener('change', (event) => {
-  state.period = event.target.value;
-  toggleRangeInputs();
+  applyPeriod(event.target.value);
   refreshMetrics();
 });
 function refreshCustomRange() {

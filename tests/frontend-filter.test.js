@@ -161,3 +161,48 @@ test('an older metrics response cannot replace the latest date range', async () 
     vm.runInContext('state.metrics.filter.from', frontend.context),
     '2026-09-02');
 });
+
+function localToday() {
+  const now = new Date();
+  return [now.getFullYear(), now.getMonth() + 1, now.getDate()]
+    .map((part) => String(part).padStart(2, '0')).join('-');
+}
+
+test('date inputs follow the selected period', () => {
+  const frontend = loadFrontend();
+  const period = frontend.element('period').listeners.change;
+  const from = frontend.element('date-from');
+  const to = frontend.element('date-to');
+
+  period({ target: { value: '2026-02' } });
+  assert.equal(from.value, '2026-02-01');
+  assert.equal(to.value, '2026-02-28');
+
+  period({ target: { value: 'all' } });
+  assert.equal(from.value, '2026-05-01');
+  assert.equal(to.value, localToday());
+
+  period({ target: { value: '2026-09' } });
+  period({ target: { value: 'custom' } });
+  assert.equal(from.value, '2026-05-01');
+  assert.equal(to.value, localToday());
+  assert.equal(
+    frontend.requests.at(-1),
+    `/api/metrics?from=2026-05-01&to=${localToday()}`);
+});
+
+test('a rebuilt period list keeps a custom range', () => {
+  const frontend = loadFrontend();
+  frontend.element('period').listeners.change({ target: { value: 'custom' } });
+  frontend.element('period').value = 'custom';
+  frontend.element('date-from').value = '2026-09-03';
+  frontend.element('date-to').value = '2026-09-10';
+  frontend.element('date-from').listeners.input();
+
+  vm.runInContext(`buildPeriodOptions({
+    months: ['2026-09'], range: { from: '2026-08-01', to: '2026-09-30' } })`,
+    frontend.context);
+
+  assert.equal(frontend.element('date-from').value, '2026-09-03');
+  assert.equal(frontend.element('date-to').value, '2026-09-10');
+});
