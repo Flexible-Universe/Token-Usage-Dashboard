@@ -34,6 +34,7 @@ Claude-Code-Usage/
   blocks/YYYY-Www.json           5-hour billing blocks
   sessions/YYYY-Www.json         sessions
   rtk/YYYY-MM.json               token savings of the proxy
+  status/<job>.<last|ok>.json    outcome of the export runs
   bin/                           the export scripts
   logs/                          logs per run
 ```
@@ -42,7 +43,7 @@ Only the monthly files in the root directory are required. If one of the
 subdirectories is missing, the dashboard still starts; the corresponding tab
 then shows a coverage note instead of empty charts.
 
-## The five kinds of file
+## The kinds of file
 
 ### 1. `YYYY-MM.json` — daily data (required)
 
@@ -147,6 +148,58 @@ sources: matching names would be a false trail.
 
 This source reaches further back than `projects/`, `blocks/` and
 `sessions/`. It has no `totals`.
+
+### 6. `status/<job>.last.json` and `status/<job>.ok.json`
+
+Not usage data but the track record of the export chain. Every export script
+leaves one status file per run, from an `EXIT` trap that stands before
+anything that can fail, so even an abort before the binary is found is
+recorded. The helper `bin/export-status.py` writes them, atomically.
+
+| File | Written | Purpose |
+|---|---|---|
+| `<job>.last.json` | after every run, also after an abort | the last attempt and its outcome |
+| `<job>.ok.json` | only when the exit code is 0, identical content | the last success |
+
+The job is `daily`, `weekly`, `monthly` or `rtk`. Two files instead of one,
+because a failed run would otherwise have to read the old file to carry the
+last success forward: JSON handling in Bash, and a bug there would delete
+exactly the information the file exists for.
+
+```json
+{ "schema": 1, "job": "weekly",
+  "startedAt": "2026-10-05T02:30:00Z", "finishedAt": "2026-10-05T02:30:41Z",
+  "exitCode": 0, "lookbackDays": 14,
+  "targets": [ { "file": "blocks/2026-W40.json", "result": "ok" },
+               { "file": "sessions/2026-W40.json", "result": "ok" } ] }
+```
+
+- Timestamps are ISO-8601 UTC in exactly the form `YYYY-MM-DDTHH:MM:SSZ`.
+- `file` in `targets` is the path relative to the data directory, for example
+  `2026-10.json`, `projects/2026-10.json`, `blocks/2026-W40.json`.
+- `result` is `ok`, `frozen`, `aborted` or `failed`. `frozen` counts as a
+  success, as everywhere in the export chain.
+- `rtk` has a single target, `rtk/`, because `rtk-merge.py` does not name the
+  monthly files it writes in a machine-readable way. `targets` is empty when
+  a run aborted before reaching any target.
+- `lookbackDays` is **mandatory** for `weekly` (an integer of at least 1) and
+  **forbidden** for every other job. The dashboard reads the threshold of the
+  weekly job from `weekly.ok.json` instead of assuming 14.
+
+A file that does not meet this shape is rejected and reported
+(`source.status.bad_file.<rule>`, one code per broken rule); for the
+evaluation it counts as absent. A status file that cannot be read at all (an OS error) is
+reported as `source.file.unreadable`, like every other source file, and
+counts as absent in the same way.
+
+**The trap in the weekly run.** The weekly run reaches back only
+`CCUSAGE_LOOKBACK_DAYS` days (default 14), not the roughly 31 days the JSONL
+files reach. After a success at time T the next regular run at T+7 covers T-7
+to T+7 and the one after at T+14 covers T to T+14. If that one fails too, the
+stretch T to T+7 is missing from T+21 on. The gap therefore opens after
+`lookbackDays`, not after 31 days. Between the two limits it can only be
+closed by a manual run with a larger lookback, which is why the dashboard
+names the exact call (see [chapter 6](06-checks.md)).
 
 ## The export chain
 

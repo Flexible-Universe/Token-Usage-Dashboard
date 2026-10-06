@@ -76,8 +76,8 @@ cat > ~/Library/Application\ Support/Claude-Code-Usage/2026-09.json <<'JSON'
 JSON
 ```
 
-The subdirectories `projects/`, `blocks/`, `sessions/` and `rtk/` are
-optional. Without them the dashboard still starts and the corresponding tabs
+The subdirectories `projects/`, `blocks/`, `sessions/`, `rtk/` and `status/` are
+optional (`rtk/` exists only when a working `rtk` is installed). Without them the dashboard still starts and the corresponding tabs
 show a coverage note.
 
 ### 3. Adjust the configuration
@@ -158,12 +158,20 @@ Steps 3 to 6 of this chapter are done by one call:
 ./install.sh --with-launchagents --label-prefix com.example
 ```
 
-The script creates the data directory with its subdirectories, copies the five
-export scripts to `<data>/bin`, creates `config.toml` from
-`config.example.toml`, fills in the four launchd templates and loads them.
+The script creates the data directory with its subdirectories, copies the six
+export scripts (including the status helper `export-status.py`) to `<data>/bin`, creates `config.toml` from
+`config.example.toml`, fills in the launchd templates and loads them. `rtk/`
+and the `rtk-daily` job are set up only when a working `rtk` is found: the
+installer looks where the launchd job looks (`RTK_BIN`, `/opt/homebrew/bin`,
+`/usr/local/bin`, then launchd's default `PATH`) and requires
+`rtk gain --format json` to return JSON. Otherwise it skips both and prints a
+note; after installing `rtk`, run `./install.sh` again. An existing install
+with an empty `rtk/` and a loaded `rtk-daily` job is not cleaned up
+automatically: remove the empty `rtk/`, the `status/rtk.*.json` files and the
+job (`launchctl unload`, then delete the plist) by hand.
 `--dry-run` shows beforehand what would happen, without changing anything.
 
-For live data, at least one of `ccusage` or `rtk` must be installed. If the
+For live data, at least one of `ccusage` or a working `rtk` must be installed. If the
 script finds neither, it stops before creating files and offers either to
 abort or to activate demo mode. Demo mode writes the generated sample data to
 the selected data directory and skips launchd jobs. For unattended setup, use
@@ -172,6 +180,16 @@ the selected data directory and skips launchd jobs. For unattended setup, use
 What it does not overwrite: an existing `config.toml`, and scripts under
 `<data>/bin` that differ from the repository. It reports both and leaves them
 alone; `--force` brings the scripts up to date.
+
+**Existing installations need `./install.sh --force` once.** The export
+scripts now write status files, and the copies under `<data>/bin` do not know
+that yet. Every non-demo run of `install.sh` creates the `status/`
+subdirectory, but without `--force` the old scripts stay in place, `status/`
+stays empty, and the dashboard shows `check.export.never_logged` per job until
+updated scripts have run. `--force` replaces the scripts that differ from the
+repository and copies the helper. Demo mode (`--demo`) deliberately creates no
+`status/`, so the demo shows the single info message "Export: kein Status"
+(`check.export.status_missing`).
 
 It does not install `ccusage` and `rtk` — that is what steps 1 and 2 are for.
 The remaining sections describe the same route by hand; they are the
@@ -201,7 +219,7 @@ is installed. `which rtk` shows which one is meant.
 
 ```bash
 DATA="$HOME/Library/Application Support/Claude-Code-Usage"
-mkdir -p "$DATA"/{bin,logs,projects,blocks,sessions,rtk}
+mkdir -p "$DATA"/{bin,logs,projects,blocks,sessions}   # rtk/ is created by rtk-export.sh after a successful probe
 cp export/ccusage-export.sh export/rtk-export.sh export/ccusage-check.py \
    export/ccusage-merge.py export/rtk-merge.py "$DATA/bin/"
 chmod +x "$DATA"/bin/*
@@ -258,7 +276,8 @@ RTK_BIN="/opt/homebrew/bin/rtk" …
 
 ### 6. Set up the launchd jobs
 
-Four jobs under `~/Library/LaunchAgents/`. The templates live in the
+Up to four jobs under `~/Library/LaunchAgents/` (`rtk-daily` only with a
+working `rtk`, see step 0). The templates live in the
 repository under `export/launchd/`:
 
 | Template | Call | Time |
@@ -304,6 +323,10 @@ the JSONL files under `~/.claude`, whose history only reaches back about 31
 days. If the weekly run fails for longer than a month, that period is
 irrecoverably lost. Daily and project data, by contrast, can be regenerated
 at any time.
+
+The dashboard watches this: the header shows the state of every export job,
+and a weekly success further back than its lookback (by local date) raises `check.export.gap_risk`
+with the call that closes the gap, see [chapter 6](06-checks.md).
 
 The 14-day lookback catches a single missed run. Anyone switching the machine
 off for longer should run the weekly run by hand afterwards.

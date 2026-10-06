@@ -105,6 +105,7 @@ function formatParam(value, spec, match, key) {
   if (spec === 'cost') return nf2.format(value) + ' $';
   if (spec === 'cost4') return nf4.format(value) + ' $';
   if (spec === 'date') return formatDate(value);
+  if (spec === 'moment') return formatMoment(value);
   if (spec === 'list') return lf.format(value.map(String));
   console.warn('i18n: unknown format "' + spec + '" in ' + key);
   return match;
@@ -201,6 +202,7 @@ async function getJSON(url) {
 async function loadAll(reload) {
   if (state.loading) return;
   state.loading = true;
+  healthGeneration += 1;
   const button = document.getElementById('reload');
   button.disabled = true;
   button.textContent = t('ui.app.loading');
@@ -220,6 +222,7 @@ async function loadAll(reload) {
     }
     renderDirectory(data);
     renderStatus(data);
+    renderExportState(data.health);
     renderFiles(data);
     buildPeriodOptions(data);
     buildModelFilter(data);
@@ -819,7 +822,10 @@ function setLanguage(code) {
   document.documentElement.lang = code;
   buildFormatters(state.locale);
   applyStaticTexts();
-  if (state.data) { buildPeriodOptions(state.data); renderStatus(state.data); renderFiles(state.data); }
+  if (state.data) {
+    buildPeriodOptions(state.data); renderStatus(state.data);
+    renderExportState(state.data.health); renderFiles(state.data);
+  }
   if (state.metrics) { renderMetrics(); }
   redrawActiveTab();
 }
@@ -866,6 +872,11 @@ function renderStatus(data) {
     item.className = 'issue-' + (ISSUE_LEVELS[issue.level] ? issue.level : 'warn');
     const level = t(ISSUE_LEVELS[issue.level] || 'ui.issue.warn');
     item.textContent = '[' + level + '] ' + issue.key + ': ' + issueText(issue);
+    if (issue.code === 'check.export.gap_risk') {
+      const command = document.createElement('code');
+      command.textContent = gapRiskCommand(data.directory, issue.params.suggestedLookback);
+      item.appendChild(command);
+    }
     list.appendChild(item);
   });
   if (health.issues.length > shown.length) {
@@ -875,6 +886,126 @@ function renderStatus(data) {
     list.appendChild(item);
   }
   list.hidden = health.issues.length === 0;
+}
+
+const EXPORT_RANK = { error: 3, warn: 2, ok: 1, unknown: 0 };
+// Pure so it can be tested without a DOM. The export script does not derive the
+// data directory from its own location, so the variable must be in the command.
+function gapRiskCommand(directory, lookbackDays) {
+  // Inside double quotes the shell still interprets $, backtick, " and \.
+  const dir = directory.replace(/[$`"\\]/g, '\\$&');
+  return 'CCUSAGE_DATA_DIR="' + dir + '" CCUSAGE_LOOKBACK_DAYS=' + lookbackDays +
+    ' "' + dir + '/bin/ccusage-export.sh" weekly';
+}
+
+// Most severe finding first; a lower index wins the header.
+const EXPORT_CAUSE_ORDER = ['gap_risk', 'never_succeeded', 'last_failed',
+  'success_unrecorded', 'future_timestamp', 'overdue'];
+const EXPORT_JOB_ORDER = ['daily', 'weekly', 'monthly', 'rtk'];
+
+// A negative age means a timestamp in the future; it is as unusable for
+// ranking as a missing one.
+function usableAge(entry) {
+  return typeof entry.ageHours === 'number' && entry.ageHours >= 0;
+}
+
+// Orders two jobs of the same state: cause rank, then the greater usable
+// age, then the fixed job order. No fallback for a missing cause: backend
+// and frontend ship together, so a missing one is a bug to surface.
+function compareExportSeverity(a, b) {
+  const byCause = EXPORT_CAUSE_ORDER.indexOf(a.cause) - EXPORT_CAUSE_ORDER.indexOf(b.cause);
+  if (byCause !== 0) return byCause;
+  const ageA = usableAge(a) ? a.ageHours : -1;
+  const ageB = usableAge(b) ? b.ageHours : -1;
+  if (ageA !== ageB) return ageB - ageA;
+  return EXPORT_JOB_ORDER.indexOf(a.job) - EXPORT_JOB_ORDER.indexOf(b.job);
+}
+
+// summarizeExports: worst state wins, but unknown ranks below ok so that a
+// fresh install with an idle monthly job does not read "no status" while
+// the other jobs run. Within that state the job with the most severe
+// finding is named. Returns null when there is nothing to show.
+function summarizeExports(exportList) {
+  if (!Array.isArray(exportList) || exportList.length === 0) return null;
+  const worst = exportList.reduce((best, entry) =>
+    (EXPORT_RANK[entry.state] > EXPORT_RANK[best] ? entry.state : best),
+  exportList[0].state);
+  const job = exportList.filter((entry) => entry.state === worst)
+    .sort(compareExportSeverity)[0];
+  return { state: worst, job };
+}
+
+function relativeAge(hours) {
+  const rtf = new Intl.RelativeTimeFormat(state.locale, { numeric: 'auto' });
+  return hours < 48
+    ? rtf.format(-Math.floor(hours), 'hour')
+    : rtf.format(-Math.floor(hours / 24), 'day');
+}
+
+function renderExportState(health) {
+  const button = document.getElementById('export-state');
+  const summary = summarizeExports(health && health.exports);
+  if (!summary) { button.hidden = true; return; }
+  let text;
+  if (summary.state === 'ok') {
+    text = t('ui.export.ok');
+  } else if (summary.state === 'unknown') {
+    text = t('ui.export.unknown');
+  } else {
+    // The "!" keeps the severity readable without the colour.
+    const cause = summary.job.cause;
+    const name = { job: summary.job.job };
+    let body;
+    if (cause === 'never_succeeded' || cause === 'last_failed') {
+      body = t('ui.export.failed', name);
+    } else if (cause === 'future_timestamp' || cause === 'success_unrecorded') {
+      // The run worked but its success record is missing: neither "failed"
+      // nor an age would be true.
+      body = t('ui.export.stale_noage', name);
+    } else if ((cause === 'gap_risk' || cause === 'overdue') && usableAge(summary.job)) {
+      body = t('ui.export.stale', { job: name.job, age: relativeAge(summary.job.ageHours) });
+    } else {
+      // Unknown or missing cause (or a known one without a usable age): show
+      // no age rather than an invented one, and leave a trace. Not throwing
+      // keeps the header alive.
+      console.error('unexpected export cause', { job: summary.job.job, cause });
+      body = t('ui.export.stale_noage', name);
+    }
+    text = '! ' + body;
+  }
+  const lines = health.exports.map((entry) => t('ui.export.job_line', {
+    job: entry.job,
+    when: entry.lastSuccess ? formatMoment(entry.lastSuccess) : t('ui.export.never')
+  }));
+  button.hidden = false;
+  button.className = 'export-state ' + summary.state;
+  button.textContent = text;
+  button.setAttribute('title', lines.join('\n'));
+  button.setAttribute('aria-label', t('ui.export.aria', { summary: text, jobs: lines.join('; ') }));
+}
+
+// Refreshing only health keeps charts and metrics untouched; the backend
+// re-evaluates export ages on every request, so this is cheap and current.
+let healthRefreshing = false;
+// Bumped by every loadAll; a health response that began before a newer
+// full load would otherwise overwrite the fresher health from that load.
+let healthGeneration = 0;
+const HEALTH_REFRESH_MS = 15 * 60 * 1000;
+async function refreshHealth() {
+  if (healthRefreshing || !state.data) return;
+  healthRefreshing = true;
+  const generation = healthGeneration;
+  try {
+    const health = await getJSON('/api/health');
+    if (!state.data || generation !== healthGeneration) return;
+    state.data.health = health;
+    renderStatus(state.data);
+    renderExportState(health);
+  } catch (error) {
+    console.error('health refresh failed', error);
+  } finally {
+    healthRefreshing = false;
+  }
 }
 
 function renderFiles(data) {
@@ -1473,6 +1604,21 @@ document.getElementById('models-codex').addEventListener('click',
   () => setModels((m) => m.startsWith('gpt-')));
 document.querySelectorAll('.tab').forEach((button) => {
   button.addEventListener('click', () => setTab(button.dataset.tab));
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') refreshHealth();
+});
+
+// A tab that stays visible would otherwise never see overdue or gap_risk.
+setInterval(() => {
+  if (document.visibilityState === 'visible') refreshHealth();
+}, HEALTH_REFRESH_MS);
+
+document.getElementById('export-state').addEventListener('click', () => {
+  const box = document.getElementById('status');
+  box.scrollIntoView({ block: 'start' });
+  box.focus();
 });
 
 if (window.matchMedia) {

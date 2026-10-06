@@ -48,6 +48,8 @@ def umgebung_ohne_live_werkzeuge(bin_verzeichnis: Path, home: Path) -> dict[str,
     env = os.environ.copy()
     env["PATH"] = str(bin_verzeichnis)
     env["HOME"] = str(home)
+    # No fixed rtk search directories, so a real rtk on the host stays invisible.
+    env["RTK_SEARCH_DIRS"] = ""
     return env
 
 
@@ -57,6 +59,25 @@ def umgebung_mit_ccusage(bin_verzeichnis: Path) -> dict[str, str]:
     (bin_verzeichnis / "ccusage").symlink_to(shutil.which("true") or "/usr/bin/true")
     env = os.environ.copy()
     env["PATH"] = f"{bin_verzeichnis}{os.pathsep}{env.get('PATH', '')}"
+    env["RTK_SEARCH_DIRS"] = ""
+    return env
+
+
+RTK_STUB_OK = "#!/bin/bash\necho '{\"summary\": {}}'\n"
+RTK_STUB_KEIN_JSON = "#!/bin/bash\necho 'rtk: Rust Type Kit'\n"
+
+
+def rtk_stub(verzeichnis: Path, inhalt: str = RTK_STUB_OK) -> Path:
+    pfad = verzeichnis / "rtk-stub"
+    pfad.write_text(inhalt, encoding="utf-8")
+    pfad.chmod(0o755)
+    return pfad
+
+
+def umgebung_ohne_rtk(bin_verzeichnis: Path, home: Path) -> dict[str, str]:
+    """A PATH holding only the needed tools and a ccusage stub, never rtk."""
+    env = umgebung_ohne_live_werkzeuge(bin_verzeichnis, home)
+    (bin_verzeichnis / "ccusage").symlink_to(shutil.which("true") or "/usr/bin/true")
     return env
 
 
@@ -100,12 +121,19 @@ class TrockenlaufTests(unittest.TestCase):
         self.assertEqual(fertig.returncode, 0, fertig.stderr)
         self.assertFalse(self.ziel.exists(), "--dry-run hat das Verzeichnis angelegt")
 
-    def test_nennt_die_fuenf_skripte_und_das_bin_verzeichnis(self):
+    def test_nennt_die_sechs_skripte_und_das_bin_verzeichnis(self):
         fertig = lauf("--dry-run", "--data-dir", str(self.ziel), env=self.env)
         for name in ("ccusage-export.sh", "rtk-export.sh", "ccusage-check.py",
-                     "ccusage-merge.py", "rtk-merge.py"):
+                     "ccusage-merge.py", "rtk-merge.py", "export-status.py"):
             self.assertIn(name, fertig.stdout)
         self.assertIn("bin", fertig.stdout)
+        # the status directory is announced next to the other subdirectories
+        self.assertIn("status", fertig.stdout)
+
+    def test_normale_installation_legt_status_verzeichnis_an(self):
+        fertig = lauf("--data-dir", str(self.ziel), env=self.env)
+        self.assertEqual(fertig.returncode, 0, fertig.stderr)
+        self.assertTrue((self.ziel / "status").is_dir())
 
     def test_ruehrt_bestehende_config_nicht_an(self):
         """Die config.toml des Repositories darf der Lauf nicht veraendern."""
@@ -163,6 +191,14 @@ class FehlendeLiveWerkzeugeTests(unittest.TestCase):
         self.assertTrue(list(self.ziel.glob("????-??.json")))
         self.assertTrue(list((self.ziel / "rtk").glob("????-??.json")))
 
+    def test_demo_option_legt_kein_status_verzeichnis_an(self):
+        # a missing status/ is what makes the dashboard report status_missing
+        fertig = lauf("--demo", "--data-dir", str(self.ziel),
+                      eingabe="", env=self.env)
+
+        self.assertEqual(fertig.returncode, 0, fertig.stderr)
+        self.assertFalse((self.ziel / "status").exists())
+
     def test_demo_modus_ueberschreibt_keine_monatsdaten(self):
         self.ziel.mkdir()
         vorhanden = self.ziel / "2026-09.json"
@@ -204,11 +240,88 @@ class FehlendeLiveWerkzeugeTests(unittest.TestCase):
         self.assertIn("launchd-Jobs werden im Demo-Modus uebersprungen", fertig.stdout)
 
 
+class OhneRtkTests(unittest.TestCase):
+    """rtk/ and the rtk job exist only when a working rtk was found."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name)
+        self.ziel = self.home / "daten"
+        self.env = umgebung_ohne_rtk(self.home / "bin", self.home)
+
+    def test_rtk_nur_im_shell_pfad_gilt_nicht_als_vorhanden(self):
+        # launchd starts with PATH=/usr/bin:/bin:/usr/sbin:/sbin and no RTK_BIN,
+        # so an rtk the job cannot find must not get rtk/ or a job.
+        (self.home / "bin" / "rtk").symlink_to(rtk_stub(self.home))
+        fertig = lauf("--data-dir", str(self.ziel), env=self.env)
+        self.assertEqual(fertig.returncode, 0, fertig.stderr)
+        self.assertFalse((self.ziel / "rtk").exists())
+        self.assertIn("nicht eingerichtet", fertig.stdout)
+
+    def test_ohne_rtk_kein_rtk_verzeichnis_und_hinweis(self):
+        fertig = lauf("--data-dir", str(self.ziel), env=self.env)
+        self.assertEqual(fertig.returncode, 0, fertig.stderr)
+        self.assertFalse((self.ziel / "rtk").exists())
+        self.assertTrue((self.ziel / "status").is_dir())
+        self.assertIn("rtk-daily", fertig.stdout)
+        self.assertIn("nicht eingerichtet", fertig.stdout)
+
+    def test_trockenlauf_ohne_rtk_kuendigt_rtk_verzeichnis_nicht_an(self):
+        fertig = lauf("--dry-run", "--data-dir", str(self.ziel), env=self.env)
+        self.assertNotIn(f"anlegen: {self.ziel}/rtk", fertig.stdout)
+        self.assertIn(f"anlegen: {self.ziel}/logs", fertig.stdout)
+
+    def test_rtk_ohne_json_gilt_als_nicht_vorhanden(self):
+        self.env["RTK_BIN"] = str(rtk_stub(self.home, RTK_STUB_KEIN_JSON))
+        fertig = lauf("--data-dir", str(self.ziel), env=self.env)
+        self.assertEqual(fertig.returncode, 0, fertig.stderr)
+        self.assertFalse((self.ziel / "rtk").exists())
+        self.assertIn("kein JSON", fertig.stdout)
+
+    def test_funktionierendes_rtk_legt_rtk_verzeichnis_an(self):
+        self.env["RTK_BIN"] = str(rtk_stub(self.home))
+        fertig = lauf("--data-dir", str(self.ziel), env=self.env)
+        self.assertEqual(fertig.returncode, 0, fertig.stderr)
+        self.assertTrue((self.ziel / "rtk").is_dir())
+
+    def test_rtk_in_festem_suchverzeichnis_wird_gefunden(self):
+        # Mirrors the launchd job, which finds rtk in the fixed directories.
+        festes = self.home / "fest"
+        festes.mkdir()
+        rtk = festes / "rtk"
+        rtk.write_text(RTK_STUB_OK, encoding="utf-8")
+        rtk.chmod(0o755)
+        self.env["RTK_SEARCH_DIRS"] = str(festes)
+        fertig = lauf("--data-dir", str(self.ziel), env=self.env)
+        self.assertEqual(fertig.returncode, 0, fertig.stderr)
+        self.assertTrue((self.ziel / "rtk").is_dir())
+
+    def test_trockenlauf_mit_rtk_kuendigt_rtk_verzeichnis_an(self):
+        self.env["RTK_BIN"] = str(rtk_stub(self.home))
+        fertig = lauf("--dry-run", "--data-dir", str(self.ziel), env=self.env)
+        self.assertIn(f"anlegen: {self.ziel}/rtk", fertig.stdout)
+
+    def test_bestehendes_leeres_rtk_verzeichnis_bekommt_aufraeumhinweis(self):
+        (self.ziel / "rtk").mkdir(parents=True)
+        fertig = lauf("--data-dir", str(self.ziel), env=self.env)
+        self.assertEqual(fertig.returncode, 0, fertig.stderr)
+        self.assertTrue((self.ziel / "rtk").is_dir(), "nothing may be deleted")
+        self.assertIn("von Hand", fertig.stdout)
+
+    def test_demo_legt_rtk_verzeichnis_mit_beispieldaten_an(self):
+        fertig = lauf("--demo", "--data-dir", str(self.ziel), env=self.env)
+        self.assertEqual(fertig.returncode, 0, fertig.stderr)
+        self.assertTrue(list((self.ziel / "rtk").glob("????-??.json")))
+
+
 class LaunchAgentsTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.ziel = Path(self._tmp.name) / "daten"
         self.env = umgebung_mit_ccusage(Path(self._tmp.name) / "bin")
+        # Machine-independent: rtk is either this stub or (in the no-rtk tests) absent.
+        self.env["RTK_BIN"] = str(rtk_stub(Path(self._tmp.name)))
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -224,6 +337,16 @@ class LaunchAgentsTests(unittest.TestCase):
         self.assertNotIn("__SCRIPT_DIR__", fertig.stdout)
         self.assertNotIn("__DATA_DIR__", fertig.stdout)
         self.assertNotIn("__LABEL_PREFIX__", fertig.stdout)
+
+    @unittest.skipUnless(IST_MACOS, "launchd gibt es nur auf macOS.")
+    def test_trockenlauf_ohne_rtk_laesst_den_rtk_job_aus(self):
+        env = umgebung_ohne_rtk(Path(self._tmp.name) / "bin2", Path(self._tmp.name))
+        fertig = lauf("--with-launchagents", "--dry-run",
+                      "--data-dir", str(self.ziel),
+                      "--label-prefix", "com.testfall", env=env)
+        self.assertEqual(fertig.returncode, 0, fertig.stderr)
+        self.assertIn("com.testfall.ccusage-daily", fertig.stdout)
+        self.assertNotIn("com.testfall.rtk-daily", fertig.stdout)
 
     @unittest.skipIf(IST_MACOS, "Der Abbruch greift nur ausserhalb von macOS.")
     def test_bricht_ausserhalb_von_macos_ab(self):

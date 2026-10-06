@@ -37,7 +37,7 @@ an environment, and that it still starts in five years.
 
 ```
                 data directory (outside the repository)
-                YYYY-MM.json  projects/  blocks/  sessions/  rtk/
+                YYYY-MM.json  projects/  blocks/  sessions/  rtk/  status/
                                   |
                                   v
    loader.py  ------------->  sources.py          reading, normalizing,

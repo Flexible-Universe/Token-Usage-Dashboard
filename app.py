@@ -18,6 +18,7 @@ import mimetypes
 import sys
 import threading
 import webbrowser
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -50,6 +51,7 @@ class DataStore:
         (sources.BLOCK_DIR, sources.WEEK_FILE_RE),
         (sources.SESSION_DIR, sources.WEEK_FILE_RE),
         (sources.RTK_DIR, sources.MONTH_FILE_RE),
+        (sources.STATUS_DIR, sources.STATUS_FILE_RE),
     )
 
     def __init__(self, directory: Path):
@@ -71,6 +73,10 @@ class DataStore:
             except OSError:
                 continue
             entries.append((str(path), stat.st_mtime_ns, stat.st_size))
+        # load_status derives present and rtkPresent from the directories
+        # alone, so an empty status/ or rtk/ appearing must invalidate too.
+        for subdir, _ in self.SUBDIRS:
+            entries.append(("dir", subdir, (self.directory / subdir).is_dir()))
         return tuple(entries)
 
     def get(self, force: bool = False) -> tuple[dict, dict, dict]:
@@ -103,6 +109,23 @@ class DataStore:
                 self._health = health
                 self._fingerprint = fingerprint
             return self._dataset, self._extras, self._health
+
+    def get_evaluated(self, now: datetime,
+                      force: bool = False) -> tuple[dict, dict, dict]:
+        """Like get, but with the export evaluation for ``now`` in the health.
+
+        The evaluation depends on the clock, so it must not enter the cached
+        health: an overdue job is the case where no file changes. It is added
+        to a copy; the cache stays untouched.
+        """
+        dataset, extras, cached = self.get(force=force)
+        issues, exports = sources.check_export_status(extras["status"], now)
+        health = dict(cached)
+        health["issues"] = cached["issues"] + issues
+        health["exports"] = exports
+        health["ok"] = not [i for i in health["issues"]
+                            if i.get("level") != "info"]
+        return dataset, extras, health
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -220,7 +243,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return sorted({n.strip() for n in names}) or None
 
     def _api_data(self, query: dict) -> None:
-        dataset, extras, health = self.store.get(force=self._flag(query, "reload"))
+        dataset, extras, health = self.store.get_evaluated(
+            datetime.now(timezone.utc), force=self._flag(query, "reload"))
         self._send_json(
             {
                 "directory": dataset["directory"],
@@ -264,7 +288,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._send_json(result)
 
     def _api_health(self, query: dict) -> None:
-        _, _, health = self.store.get(force=self._flag(query, "reload"))
+        _, _, health = self.store.get_evaluated(
+            datetime.now(timezone.utc), force=self._flag(query, "reload"))
         self._send_json(health)
 
     def _api_projects(self, query: dict) -> None:

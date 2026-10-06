@@ -18,8 +18,10 @@
 ### `DataStore`
 
 Holds the parsed result in memory and reloads on demand. The trigger is a
-**fingerprint**: path, `st_mtime_ns` and size of all source files. If any of
-that changes, everything is read again. The comparison is deliberately blunt
+**fingerprint**: path, `st_mtime_ns` and size of all source files, plus
+whether each subdirectory in `SUBDIRS` exists — an empty `status/` or `rtk/`
+appearing changes the export evaluation without any file. If any of that
+changes, everything is read again. The comparison is deliberately blunt
 — with a handful of files, one `stat()` pass per request is cheaper than any
 bookkeeping about what might have changed.
 
@@ -32,6 +34,28 @@ read errors of the extra sources as messages of level `error`. Every message
 carries `code` and `params`, never a finished sentence — `params` holds raw
 values, numbers as numbers and dates as ISO-8601, so the frontend can render
 them in the active language.
+
+`get_evaluated(now)` wraps `get` for the endpoints that return `health`
+(`/api/data` and `/api/health`). It adds the evaluation of the export jobs
+(`sources.check_export_status`) to a **copy** of the cached health: the
+messages are appended to `issues`, the per-job rows go into `health.exports`,
+and `ok` is recomputed. The evaluation depends on the clock, and an overdue
+job is exactly the case where no file changes, so it must not enter the
+cached health, which is only rebuilt when the fingerprint changes. The cache
+itself stays untouched.
+
+`health.exports` has one row per job (`daily`, `weekly`, `monthly`, and `rtk`
+only when `rtk/` exists):
+
+| Field | Meaning |
+|---|---|
+| `job` | `daily`, `weekly`, `monthly` or `rtk` |
+| `lastSuccess` | `finishedAt` of `<job>.ok.json`, or `null` |
+| `lastAttempt` | `finishedAt` of `<job>.last.json`, or `null` |
+| `lastExitCode` | exit code of the last attempt, or `null` |
+| `state` | `ok`, `warn`, `error` or `unknown` |
+| `cause` | `gap_risk`, `never_succeeded`, `last_failed`, `success_unrecorded`, `future_timestamp`, `overdue`, or `null` for `ok` and `unknown` |
+| `ageHours` | age of the last success in hours, one decimal, or `null` |
 
 One peculiarity: `health["ok"]` ignores messages of level `info`. An `info`
 message names a check that was skipped and is not a finding. It must not pull
@@ -184,7 +208,23 @@ heuristic; `app.py` uses that when a model filter is active, because
 `filter_days` only recomputes `modelBreakdowns` and `agentBreakdowns` would
 stay unfiltered.
 
+`load_status` reads `status/<job>.<last|ok>.json`. A broken file is reported
+with one code per broken rule, `source.status.bad_file.<rule>`, whose
+`params` carry only `file` and raw values, and counts as absent. A file that
+cannot be read at all gives `source.file.unreadable`. A missing `status/`
+directory is no error; the field `present` tells it apart from an empty one,
+because only the empty directory means "job never logged". `rtkPresent`
+records whether `rtk/` exists, so the `rtk` job is only evaluated when the
+source is in use.
+
 `check_extras` checks the extra sources, see [chapter 6](06-checks.md).
+`check_export_status(status, now)` evaluates the jobs against a given `now`.
+It reads no file and no clock, so every threshold is testable at its
+boundary, and it stays apart from `check_extras` for the reason given under
+`DataStore`. Whether the `rtk` job is evaluated comes from
+`status["rtkPresent"]` alone. Every message is recorded together with its
+`cause` where it is created; a cause missing from the ranking raises instead
+of turning into `null`.
 
 ## `insights.py` — metrics of the extra sources
 

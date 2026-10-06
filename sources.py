@@ -15,9 +15,11 @@ rtk/YYYY-MM.json.
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import date as _date
 from datetime import datetime as _datetime
+from datetime import timezone as _timezone
 from pathlib import Path
 
 import loader
@@ -26,6 +28,8 @@ PROJECT_DIR = "projects"
 BLOCK_DIR = "blocks"
 SESSION_DIR = "sessions"
 RTK_DIR = "rtk"
+STATUS_DIR = "status"
+STATUS_FILE_RE = re.compile(r"^(daily|weekly|monthly|rtk)\.(last|ok)\.json$")
 
 MONTH_FILE_RE = loader.MONTH_FILE_RE
 
@@ -56,6 +60,25 @@ MESSAGE_CODES = frozenset({
     "check.crosscheck.cost_mismatch",
     "check.rtk.month_mismatch",
     "check.rtk.duplicate_date",
+    "source.status.bad_file.not_json",
+    "source.status.bad_file.not_object",
+    "source.status.bad_file.schema",
+    "source.status.bad_file.job_mismatch",
+    "source.status.bad_file.timestamp",
+    "source.status.bad_file.exit_code",
+    "source.status.bad_file.targets",
+    "source.status.bad_file.target_entry",
+    "source.status.bad_file.lookback",
+    "source.status.bad_file.lookback_not_allowed",
+    "check.export.overdue",
+    "check.export.gap_risk",
+    "check.export.last_failed",
+    "check.export.last_failed_no_targets",
+    "check.export.last_failed_after_targets",
+    "check.export.success_unrecorded",
+    "check.export.future_timestamp",
+    "check.export.never_logged",
+    "check.export.status_missing",
 })
 WEEK_FILE_RE = re.compile(r"^(\d{4})-W(\d{2})\.json$")
 
@@ -467,18 +490,118 @@ def agent_split(days: list[dict], prefer_agents: bool = True) -> list[dict]:
 
 
 def load_extras(directory: Path) -> dict:
-    """Liest alle vier Zusatzquellen. Fehlende Verzeichnisse sind kein Fehler."""
+    """Liest alle Zusatzquellen. Fehlende Verzeichnisse sind kein Fehler."""
     projects = load_projects(directory)
     sessions = load_sessions(directory)
     blocks = load_blocks(directory)
     rtk = load_rtk(directory)
+    status = load_status(directory)
     errors = []
     for name, part in (("projects", projects), ("sessions", sessions),
-                       ("blocks", blocks), ("rtk", rtk)):
+                       ("blocks", blocks), ("rtk", rtk), ("status", status)):
         for err in part["errors"]:
             errors.append({**err, "source": name})
     return {"projects": projects, "sessions": sessions, "blocks": blocks,
-            "rtk": rtk, "errors": errors}
+            "rtk": rtk, "status": status, "errors": errors}
+
+
+EXPORT_JOBS = ("daily", "weekly", "monthly", "rtk")
+_STATUS_STAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_STATUS_STAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+_TARGET_RESULTS = frozenset({"ok", "frozen", "aborted", "failed"})
+
+
+def _status_moment(value) -> _datetime | None:
+    """Parses the strict ``YYYY-MM-DDTHH:MM:SSZ`` form, None for anything else."""
+    if not isinstance(value, str) or not _STATUS_STAMP_RE.match(value):
+        return None
+    try:
+        return _datetime.strptime(value, _STATUS_STAMP_FORMAT).replace(
+            tzinfo=_timezone.utc)
+    except ValueError:
+        return None
+
+
+def _is_int(value) -> bool:
+    # bool is an int subclass; a JSON true must not pass as an exit code.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _validate_status(raw, job: str) -> tuple[dict | None, str | None, dict]:
+    """Returns (record, None, {}) or (None, code, params) for one parsed file.
+
+    One message code per rule, so each sentence lives in the catalogues and
+    the params carry raw values only.
+    """
+    if not isinstance(raw, dict):
+        return None, "source.status.bad_file.not_object", {}
+    if not _is_int(raw.get("schema")) or raw["schema"] != 1:
+        return None, "source.status.bad_file.schema", {}
+    if raw.get("job") != job:
+        return None, "source.status.bad_file.job_mismatch", {"job": job}
+    for field in ("startedAt", "finishedAt"):
+        if _status_moment(raw.get(field)) is None:
+            return None, "source.status.bad_file.timestamp", {"field": field}
+    if not _is_int(raw.get("exitCode")):
+        return None, "source.status.bad_file.exit_code", {}
+    targets = raw.get("targets")
+    if not isinstance(targets, list):
+        return None, "source.status.bad_file.targets", {}
+    for target in targets:
+        if (not isinstance(target, dict)
+                or not isinstance(target.get("file"), str)
+                or not isinstance(target.get("result"), str)
+                or target["result"] not in _TARGET_RESULTS):
+            return None, "source.status.bad_file.target_entry", {}
+    lookback = raw.get("lookbackDays")
+    if job == "weekly":
+        if not _is_int(lookback) or lookback < 1:
+            return None, "source.status.bad_file.lookback", {}
+    elif "lookbackDays" in raw:
+        return None, "source.status.bad_file.lookback_not_allowed", {"job": job}
+    return {
+        "job": job,
+        "startedAt": raw["startedAt"],
+        "finishedAt": raw["finishedAt"],
+        "exitCode": raw["exitCode"],
+        "lookbackDays": lookback if job == "weekly" else None,
+        "targets": [{"file": t["file"], "result": t["result"]} for t in targets],
+    }, None, {}
+
+
+def load_status(directory: Path) -> dict:
+    """Reads status/<job>.<last|ok>.json written by the export chain.
+
+    A broken file is reported and counts as absent for the evaluation. A
+    missing status/ directory is no error; ``present`` tells it apart from an
+    empty one, because only the empty directory means "job never logged".
+    """
+    root = Path(directory)
+    jobs = {job: {"last": None, "ok": None} for job in EXPORT_JOBS}
+    errors: list[dict] = []
+    for path in find_source_files(root, STATUS_DIR, STATUS_FILE_RE):
+        job, kind = STATUS_FILE_RE.match(path.name).groups()
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            # Same message and raw OS text as for every other source file.
+            errors.append({"file": path.name, "code": "source.file.unreadable",
+                           "params": {"file": path.name, "reason": str(exc)}})
+            continue
+        try:
+            raw = json.loads(data)
+        except ValueError:
+            record, code, params = None, "source.status.bad_file.not_json", {}
+        else:
+            record, code, params = _validate_status(raw, job)
+        if record is None:
+            errors.append({"file": path.name, "code": code,
+                           "params": {"file": path.name, **params}})
+        else:
+            jobs[job][kind] = record
+    return {"present": (root / STATUS_DIR).is_dir(),
+            "rtkPresent": (root / RTK_DIR).is_dir(),
+            "jobs": jobs, "errors": errors}
 
 
 def _sum_field(rows: list[dict], field: str):
@@ -709,3 +832,157 @@ def check_extras(extras: dict, days: list[dict]) -> dict:
         "rtkDays": len({r["date"] for r in extras["rtk"]["rows"]}),
     }
     return {"issues": issues, "checks": checks}
+
+
+def _export_issue(level: str, code: str, job: str, params: dict) -> dict:
+    return {"level": level, "scope": "export", "key": job, "code": code,
+            "params": {"job": job, **params}}
+
+
+# Most severe finding first; the header names the job by this order.
+_CAUSE_ORDER = ("gap_risk", "never_succeeded", "last_failed",
+                "success_unrecorded", "future_timestamp", "overdue")
+
+
+def _unknown_row(job: str) -> dict:
+    return {"job": job, "lastSuccess": None, "lastAttempt": None,
+            "lastExitCode": None, "state": "unknown", "cause": None,
+            "ageHours": None}
+
+
+class _JobFindings:
+    """Issues of one job, each recorded together with its cause.
+
+    The cause is set where the issue is created, so a message code can
+    never end up without one; an unlisted cause fails in ``cause()``
+    instead of turning into None.
+    """
+
+    def __init__(self, job: str):
+        self.job = job
+        self.issues: list[dict] = []
+        self._causes: list[str] = []
+
+    def add(self, level: str, code: str, cause: str, params: dict) -> None:
+        self.issues.append(_export_issue(level, code, self.job, params))
+        self._causes.append(cause)
+
+    def state(self) -> str:
+        if not self.issues:
+            return "ok"
+        return "error" if any(i["level"] == "error" for i in self.issues) else "warn"
+
+    def cause(self) -> str | None:
+        if not self._causes:
+            return None
+        return min(self._causes, key=_CAUSE_ORDER.index)
+
+
+def _evaluate_job(job: str, entry: dict, now: _datetime) -> tuple[list, dict]:
+    """Issues and the ``exports`` row for one job that has a status entry."""
+    last, ok = entry["last"], entry["ok"]
+    row = _unknown_row(job)
+    if last is None and ok is None:
+        return [_export_issue("info", "check.export.never_logged", job, {})], row
+
+    found = _JobFindings(job)
+    last_finished = _status_moment(last["finishedAt"]) if last else None
+    ok_finished = _status_moment(ok["finishedAt"]) if ok else None
+    if last:
+        row["lastAttempt"] = last["finishedAt"]
+        row["lastExitCode"] = last["exitCode"]
+    if ok:
+        row["lastSuccess"] = ok["finishedAt"]
+        row["ageHours"] = round((now - ok_finished).total_seconds() / 3600, 1)
+
+    future = max((m for m in (ok_finished, last_finished)
+                  if m is not None and m > now), default=None)
+    if future is not None:
+        found.add("warn", "check.export.future_timestamp", "future_timestamp",
+                  {"timestamp": future.strftime(_STATUS_STAMP_FORMAT)})
+    # Only a success in the future makes its age meaningless; a future
+    # ``last`` alone says nothing about how old the last success is.
+    if ok is not None and ok_finished <= now:
+        seconds = (now - ok_finished).total_seconds()
+        hours, days = seconds / 3600, seconds / 86400
+        overdue = {"lastSuccess": ok["finishedAt"], "ageHours": round(hours, 1)}
+        if job in ("daily", "rtk"):
+            if hours > 36:
+                found.add("warn", "check.export.overdue", "overdue", overdue)
+        elif job == "weekly":
+            lookback = ok["lookbackDays"]
+            # ccusage-export.sh exports from the local date "today minus
+            # lookbackDays", so the gap opens at local midnight, not after
+            # lookbackDays times 24 hours.
+            local_days = (now.astimezone().date()
+                          - ok_finished.astimezone().date()).days
+            if local_days > lookback:
+                # The next regular run no longer bridges the gap, so this
+                # replaces the plain overdue warning. ceil(days) + 1 is at
+                # least local_days even across a DST change.
+                found.add("error", "check.export.gap_risk", "gap_risk", {
+                    "lastSuccess": ok["finishedAt"],
+                    "ageDays": round(days, 1), "lookbackDays": lookback,
+                    "suggestedLookback": math.ceil(days) + 1})
+            elif days > 8:
+                found.add("warn", "check.export.overdue", "overdue", overdue)
+        else:
+            # launchd starts the monthly job in local time, so the month
+            # boundary is the server's local one, not UTC.
+            local_now = now.astimezone()
+            first_of_month = local_now.date().replace(day=1)
+            if (local_now.day >= 2
+                    and ok_finished.astimezone().date() < first_of_month):
+                found.add("warn", "check.export.overdue", "overdue", overdue)
+
+    last_is_newest = last is not None and (
+        ok is None or last_finished > ok_finished)
+    if last_is_newest and last["exitCode"] == 0:
+        # One helper call writes last and ok with the same content, so a
+        # newer successful last means the success record was lost. Taking
+        # last as the success would invent an age.
+        found.add("warn", "check.export.success_unrecorded",
+                  "success_unrecorded", {"lastAttempt": last["finishedAt"]})
+    elif last_is_newest:
+        # The message states what the targets show: some failed, none was
+        # reached, or all were written and the run failed afterwards. The
+        # cause does not depend on that; without any success it is its own.
+        cause = "never_succeeded" if ok is None else "last_failed"
+        attempt = {"lastAttempt": last["finishedAt"],
+                   "exitCode": last["exitCode"]}
+        files = [t["file"] for t in last["targets"]
+                 if t["result"] in ("aborted", "failed")]
+        if files:
+            found.add("warn", "check.export.last_failed", cause,
+                      {**attempt, "files": files})
+        elif not last["targets"]:
+            found.add("warn", "check.export.last_failed_no_targets", cause,
+                      attempt)
+        else:
+            found.add("warn", "check.export.last_failed_after_targets", cause,
+                      attempt)
+    row["state"] = found.state()
+    row["cause"] = found.cause()
+    return found.issues, row
+
+
+def check_export_status(status: dict, now: _datetime) -> tuple:
+    """Evaluates the export jobs against ``now``; returns (issues, exports).
+
+    Reads no files and no clock, so the thresholds are testable and the
+    caller can run it on every request. It stays apart from check_extras:
+    that result is cached until a file changes, while an overdue job is
+    exactly the case where no file changes. Whether rtk is expected comes
+    from ``status["rtkPresent"]`` alone, which load_status derives from rtk/.
+    """
+    jobs = [j for j in EXPORT_JOBS if j != "rtk" or status["rtkPresent"]]
+    if not status["present"]:
+        issues = [{"level": "info", "scope": "export", "key": "status",
+                   "code": "check.export.status_missing", "params": {}}]
+        return issues, [_unknown_row(j) for j in jobs]
+    issues, exports = [], []
+    for job in jobs:
+        job_issues, row = _evaluate_job(job, status["jobs"][job], now)
+        issues.extend(job_issues)
+        exports.append(row)
+    return issues, exports

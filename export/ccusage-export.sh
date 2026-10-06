@@ -55,10 +55,33 @@ case "$MODE" in
     *) echo "Aufruf: $(basename "$0") {daily|weekly|monthly}" >&2; exit 2 ;;
 esac
 
-mkdir -p "$DATA_DIR"/{projects,blocks,sessions,logs}
+mkdir -p "$DATA_DIR"/{projects,blocks,sessions,logs,status}
 LOG="$LOG_DIR/$MODE.log"
 
 log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG"; }
+
+# --- Status schreiben ---------------------------------------------------------
+# Der EXIT-Handler steht vor find_ccusage, damit auch ein Abbruch ohne ccusage
+# eine Statusdatei hinterlaesst. Ein ungueltiger Modus kommt nie hierher: es
+# gibt dann keinen Job, dem der Status gehoeren koennte.
+STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+TARGETS=()   # "<pfad relativ zum Datenverzeichnis>=<ergebnis>", von export_json gefuellt
+
+write_status() {
+    local exit_code=$?
+    local args=(--dir "$DATA_DIR/status" --job "$MODE"
+                --started "$STARTED" --finished "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                --exit-code "$exit_code")
+    [[ "$MODE" == weekly ]] && args+=(--lookback-days "$LOOKBACK_DAYS")
+    local t
+    # ${arr[@]+...}: leeres Array ist unter set -u in bash 3.2 (macOS) ein Fehler.
+    for t in ${TARGETS[@]+"${TARGETS[@]}"}; do args+=(--target "$t"); done
+    # Ein Fehlschlag hier darf den urspruenglichen Exitcode nicht ueberdecken.
+    python3 "$SELF_DIR/export-status.py" "${args[@]}" 2>>"$LOG" \
+        || log "FEHLER: Status nicht geschrieben"
+    exit "$exit_code"
+}
+trap write_status EXIT
 
 CCUSAGE="$(find_ccusage)" || {
     log "FEHLER: ccusage nicht gefunden. CCUSAGE_BIN setzen."
@@ -89,28 +112,53 @@ export PATH
 #   freeze  Rueckschritt bedeutet: das Archiv ist vollstaendiger als das, was
 #           ccusage heute noch hergibt. Die Datei bleibt stehen, der Lauf gilt
 #           als erfolgreich. Fuer abgeschlossene Vormonate.
+#
+# Jeder Schritt wird einzeln geprueft. Alle Aufrufe stehen in der Form
+# "export_json ... || rc=1"; in diesem Kontext ist set -e fuer den gesamten
+# Funktionsrumpf aus, ein scheiternder mv liefe sonst unbemerkt weiter und
+# das Ziel wuerde als "ok" gemeldet.
 export_json() {
     local policy="$1"; shift
     local target="$1"; shift
-    local tmp; tmp="$(mktemp "${target}.XXXXXX")"
+    local tmp=""
     local merged=""
     trap 'rm -f "$tmp" "$merged"' RETURN
     local label; label="$(basename "$(dirname "$target")")/$(basename "$target")"
+    # Im Status steht der Pfad relativ zum Datenverzeichnis, unabhaengig von dessen Namen.
+    local rel="${target#"$DATA_DIR"/}"
+
+    if ! tmp="$(mktemp "${target}.XXXXXX")"; then
+        tmp=""
+        log "FEHLER: temporaere Datei fuer $label nicht angelegt -> $label unveraendert"
+        TARGETS+=("$rel=failed")
+        return 1
+    fi
 
     if ! "$CCUSAGE" "$@" >"$tmp" 2>>"$LOG"; then
         log "FEHLER: 'ccusage $*' schlug fehl -> $label unveraendert"
+        TARGETS+=("$rel=failed")
         return 1
     fi
 
     if [[ "$policy" == merge ]]; then
-        merged="$(mktemp "${target}.XXXXXX")"
         local bilanz
+        if ! merged="$(mktemp "${target}.XXXXXX")"; then
+            merged=""
+            log "FEHLER: temporaere Datei fuer $label nicht angelegt -> $label unveraendert"
+            TARGETS+=("$rel=failed")
+            return 1
+        fi
         if ! bilanz="$(python3 "$SELF_DIR/ccusage-merge.py" "$tmp" "$target" "$merged" 2>>"$LOG")"; then
             log "ABBRUCH: Zusammenfuehren fehlgeschlagen -> $label unveraendert"
+            TARGETS+=("$rel=failed")
             return 1
         fi
         log "MERGE $label  ($bilanz)"
-        mv "$merged" "$tmp"
+        if ! mv "$merged" "$tmp"; then
+            log "ABBRUCH: Zusammengefuehrte Datei nicht uebernommen -> $label unveraendert"
+            TARGETS+=("$rel=failed")
+            return 1
+        fi
         merged=""
     fi
 
@@ -118,16 +166,24 @@ export_json() {
     verdict="$(python3 "$SELF_DIR/ccusage-check.py" "$tmp" "$target" 2>>"$LOG")" || rc=$?
     if [[ $rc -eq 3 && "$policy" == freeze ]]; then
         log "EINGEFROREN: $label unveraendert, das Archiv ist vollstaendiger"
+        TARGETS+=("$rel=frozen")
         return 0
     fi
     if [[ $rc -ne 0 ]]; then
         log "ABBRUCH: $label unveraendert"
+        TARGETS+=("$rel=aborted")
         return 1
     fi
 
-    local bytes; bytes="$(wc -c <"$tmp" | tr -d ' ')"
-    mv "$tmp" "$target"
+    # Die Groesse dient nur dem Log; ihr Ausfall darf ein Ziel nicht kippen.
+    local bytes; bytes="$(wc -c <"$tmp" | tr -d ' ')" || bytes="?"
+    if ! mv "$tmp" "$target"; then
+        log "FEHLER: $label nicht ersetzt"
+        TARGETS+=("$rel=failed")
+        return 1
+    fi
     log "OK   $label  ${bytes} Bytes  ($verdict)  [$*]"
+    TARGETS+=("$rel=ok")
 }
 
 # --- Datumsbausteine (BSD date) -----------------------------------------------

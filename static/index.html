@@ -17,6 +17,7 @@
   </div>
   <div class="topbar-actions">
     <span id="last-load" class="muted"></span>
+    <button type="button" id="export-state" class="export-state" hidden></button>
     <select id="lang-select" data-i18n-aria="ui.lang.aria"></select>
     <a class="icon-link" href="https://github.com/Flexible-Universe/Token-Usage-Dashboard"
        target="_blank" rel="noopener noreferrer"
@@ -37,7 +38,7 @@
   <button type="button" class="tab" data-tab="rtk" data-i18n="ui.tab.rtk">RTK</button>
 </nav>
 
-<section id="status" class="status" aria-live="polite">
+<section id="status" class="status" aria-live="polite" tabindex="-1">
   <div class="status-line" id="status-line" data-i18n="ui.status.loading">Daten werden geladen …</div>
   <ul class="issue-list" id="issue-list" hidden></ul>
 </section>

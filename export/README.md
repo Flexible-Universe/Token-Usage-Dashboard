@@ -22,6 +22,7 @@ limitation.
 | `ccusage-check.py` | Checks a fresh export against the existing file |
 | `ccusage-merge.py` | Layers an export onto an existing archive file |
 | `rtk-merge.py` | Distributes the rtk export across monthly files and merges them |
+| `export-status.py` | Writes the status files of a run |
 
 The three modes of `ccusage-export.sh`:
 
@@ -33,13 +34,39 @@ The three modes of `ccusage-export.sh`:
 - `ccusage-export.sh monthly` freezes the completed previous month.
 
 `rtk-export.sh` has no modes. It fetches the complete history
-(`rtk gain --all --format json`) and merges it into `rtk/YYYY-MM.json`.
+(`rtk gain --all --format json`) and merges it into `rtk/YYYY-MM.json`. The `rtk/` directory is created only after
+a successful probe (`rtk gain --format json` returns JSON), so a host without
+a working `rtk` never starts to expect rtk data. `install.sh` applies the same
+lookup and probe before it sets up `rtk/` and the `rtk-daily` job.
+
+## Status files
+
+Every run of `ccusage-export.sh` and `rtk-export.sh` leaves a record in
+`<data>/status/`, written by `export-status.py` from an `EXIT` trap, so an
+abort is recorded too:
+
+- `<job>.last.json` after every run, `<job>.ok.json` additionally when the
+  exit code is 0, with identical content. `<job>` is `daily`, `weekly`,
+  `monthly` or `rtk`.
+- Content: `schema` (1), `job`, `startedAt` and `finishedAt` as
+  `YYYY-MM-DDTHH:MM:SSZ` in UTC, `exitCode`, `targets` and, for `weekly`
+  only, `lookbackDays`.
+- `targets` lists the files with `file` (path relative to the data
+  directory) and `result` (`ok`, `frozen`, `aborted` or `failed`). `rtk`
+  has the single target `rtk/`.
+- The helper validates its input and exits with code 2 before writing
+  anything. A failure of the helper never changes the exit code of the run.
+
+The dashboard evaluates these files, see `docs/06-checks.md`. Format and the
+reason for two files: `docs/02-data-sources.md`.
 
 ## Why the weekly run is mandatory
 
 Blocks and sessions come from the JSONL files under `~/.claude`, whose history
 only reaches back about 31 days. If the weekly run fails for longer than a
-month, that period is irrecoverably lost. Daily and project data, by contrast,
+month, that period is irrecoverably lost. The gap opens earlier than that: after
+`CCUSAGE_LOOKBACK_DAYS`, because the weekly window then no longer reaches the
+last successful run. The dashboard reports it. Daily and project data, by contrast,
 can be regenerated at any time — they come from a source that does not expire.
 
 ## Regressions: strict, merge, freeze
@@ -67,7 +94,8 @@ A regression can be allowed deliberately: `CCUSAGE_ALLOW_SHRINK=1`.
 | `CCUSAGE_BIN` | path to the `ccusage` binary | searched for |
 | `CCUSAGE_LOOKBACK_DAYS` | overlap of the weekly window in days | `14` |
 | `RTK_DATA_DIR` | data directory for `rtk-export.sh` | `~/Library/Application Support/Claude-Code-Usage` |
-| `RTK_BIN` | path to the `rtk` binary | searched for |
+| `RTK_BIN` | path to the `rtk` binary | searched for (`/opt/homebrew/bin`, `/usr/local/bin`, then `PATH`) |
+| `RTK_SEARCH_DIRS` | colon-separated directories searched for `rtk` before `PATH`; also read by `install.sh` | `/opt/homebrew/bin:/usr/local/bin` |
 
 Both scripts search for the binary themselves, because launchd starts with
 `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and nvm or Homebrew are invisible there.

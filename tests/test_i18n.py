@@ -21,7 +21,7 @@ I18N_DIR = BASE_DIR / "static" / "i18n"
 INDEX_HTML = BASE_DIR / "static" / "index.html"
 
 PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z0-9_]+)(?::([a-z0-9]+))?\}")
-KNOWN_FORMATS = {None, "int", "cost", "cost4", "date", "list"}
+KNOWN_FORMATS = {None, "int", "cost", "cost4", "date", "moment", "list"}
 
 
 def read_catalog(code: str) -> dict:

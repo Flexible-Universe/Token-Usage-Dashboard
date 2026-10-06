@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -475,6 +476,104 @@ class ExtraSourceErrorTests(unittest.TestCase):
             any(i["level"] == "error" and i["scope"] == "projects"
                 and i["key"] == "2026-09.json" for i in payload["issues"])
         )
+
+
+def write_status(directory, job, kind, finished, exit_code=0):
+    path = Path(directory) / "status"
+    path.mkdir(exist_ok=True)
+    record = {"schema": 1, "job": job, "startedAt": finished,
+              "finishedAt": finished, "exitCode": exit_code, "targets": []}
+    (path / f"{job}.{kind}.json").write_text(json.dumps(record), encoding="utf-8")
+
+
+class ExportEvaluationTests(unittest.TestCase):
+    """DataStore.get_evaluated attaches a fresh, time-dependent evaluation."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        write_month(self.dir, "2026-09", [new_day("2026-09-01", [
+            breakdown("claude-opus-5", 1, 2000, 30, 4000, 12.0)])])
+        self.store = app.DataStore(self.dir)
+        self.t0 = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
+
+    def codes(self, health):
+        return [i["code"] for i in health["issues"]]
+
+    def test_new_status_file_is_noticed_without_reload(self):
+        before = self.store.get_evaluated(self.t0)[2]
+        self.assertIn("check.export.status_missing", self.codes(before))
+        write_status(self.dir, "daily", "last", "2026-10-05T11:00:00Z")
+        write_status(self.dir, "daily", "ok", "2026-10-05T11:00:00Z")
+        after = self.store.get_evaluated(self.t0)[2]
+        self.assertNotIn("check.export.status_missing", self.codes(after))
+
+    def test_time_alone_raises_the_warning(self):
+        write_status(self.dir, "daily", "last", "2026-10-05T11:00:00Z")
+        write_status(self.dir, "daily", "ok", "2026-10-05T11:00:00Z")
+        fresh = self.store.get_evaluated(self.t0)[2]
+        self.assertNotIn("check.export.overdue", self.codes(fresh))
+        late = self.store.get_evaluated(self.t0 + timedelta(hours=40))[2]
+        self.assertIn("check.export.overdue", self.codes(late))
+        self.assertFalse(late["ok"])
+
+    def test_repeated_calls_do_not_stack_issues_or_touch_the_cache(self):
+        first = self.store.get_evaluated(self.t0)[2]
+        second = self.store.get_evaluated(self.t0)[2]
+        self.assertEqual(len(first["issues"]), len(second["issues"]))
+        self.assertNotIn("exports", self.store.get()[2])
+        self.assertNotIn("check.export.status_missing",
+                         self.codes(self.store.get()[2]))
+
+    def test_empty_status_directory_appearing_invalidates_the_cache(self):
+        before = self.store.get_evaluated(self.t0)[2]
+        self.assertIn("check.export.status_missing", self.codes(before))
+        (self.dir / "status").mkdir()
+        after = self.store.get_evaluated(self.t0)[2]
+        self.assertNotIn("check.export.status_missing", self.codes(after))
+        self.assertIn("check.export.never_logged", self.codes(after))
+        (self.dir / "status").rmdir()
+        gone = self.store.get_evaluated(self.t0)[2]
+        self.assertIn("check.export.status_missing", self.codes(gone))
+
+    def test_empty_rtk_directory_appearing_adds_the_rtk_job(self):
+        (self.dir / "status").mkdir()
+        jobs = [e["job"] for e in self.store.get_evaluated(self.t0)[2]["exports"]]
+        self.assertNotIn("rtk", jobs)
+        (self.dir / "rtk").mkdir()
+        jobs = [e["job"] for e in self.store.get_evaluated(self.t0)[2]["exports"]]
+        self.assertIn("rtk", jobs)
+        (self.dir / "rtk").rmdir()
+        jobs = [e["job"] for e in self.store.get_evaluated(self.t0)[2]["exports"]]
+        self.assertNotIn("rtk", jobs)
+
+    def test_rejected_status_file_is_an_error_with_its_rule_code(self):
+        write_status(self.dir, "daily", "last", "2026-10-05T11:00:00Z")
+        (self.dir / "status" / "daily.ok.json").write_text(
+            json.dumps({"schema": 2}), encoding="utf-8")
+        health = self.store.get_evaluated(self.t0)[2]
+        rejected = [i for i in health["issues"]
+                    if i["code"].startswith("source.status.")]
+        self.assertEqual(rejected, [{
+            "level": "error", "scope": "status", "key": "daily.ok.json",
+            "code": "source.status.bad_file.schema",
+            "params": {"file": "daily.ok.json"}}])
+        self.assertFalse(health["ok"])
+
+    def test_exports_are_unknown_without_status_directory(self):
+        health = self.store.get_evaluated(self.t0)[2]
+        self.assertEqual({e["state"] for e in health["exports"]}, {"unknown"})
+        self.assertTrue(health["ok"])
+
+
+class ExportApiTests(ServerCase):
+    def test_data_and_health_carry_exports(self):
+        for url in ("/api/health", "/api/data"):
+            payload = get(self.base + url)
+            health = payload if url == "/api/health" else payload["health"]
+            self.assertTrue(health["exports"])
+            self.assertEqual({e["state"] for e in health["exports"]}, {"unknown"})
 
 
 if __name__ == "__main__":

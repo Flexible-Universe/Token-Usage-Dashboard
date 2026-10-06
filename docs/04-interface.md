@@ -6,7 +6,7 @@ Three files under `static/`, no build step, no framework: `index.html`
 ## Page layout
 
 ```
-Header        data directory, time of last load, "Daten neu laden" (reload)
+Header        data directory, time of last load, export summary, "Daten neu laden" (reload)
 Tab bar       Uebersicht | Projekte | Sessions | Bloecke | RTK
 Status area   result of the plausibility check, message list
 Filter bar    period, quantity, models
@@ -120,6 +120,35 @@ restored on the next visit.
 
 **Reload.** The button appends `reload=1` and forces the `DataStore` to read
 everything again. The time of the last load is shown in the header.
+
+**Export summary.** A button in the header condenses `health.exports` into
+one line. The worst state wins, but `unknown` ranks below `ok`, so a fresh
+installation with an idle monthly job does not read "no status" while the
+other jobs run. Among the jobs in that state, the header names the one with
+the most severe cause, in this order: `gap_risk`, `never_succeeded`,
+`last_failed`, `success_unrecorded`, `future_timestamp`, `overdue`. Ties go to the larger usable
+`ageHours` (a negative age counts as missing), then to the job order `daily`,
+`weekly`, `monthly`, `rtk`. The text depends on the cause:
+
+| Cause | Text |
+|---|---|
+| `gap_risk`, `overdue` | `ui.export.stale`, with the age ("Export: weekly 9 days ago") |
+| `never_succeeded`, `last_failed` | `ui.export.failed` |
+| `success_unrecorded`, `future_timestamp` | `ui.export.stale_noage` |
+
+Every state that is neither `ok` nor `unknown`, that is `warn` and `error`,
+is prefixed with `!`, so it stays readable without the colour. An unexpected or missing `cause`, or a stale cause without a usable
+age, writes `console.error` and shows `ui.export.stale_noage` without an age
+rather than an invented one. The tooltip lists the last success per job;
+where there is none it reads `ui.export.never` ("noch kein Erfolg" / "no
+success yet"). A click scrolls to the status area.
+
+**Refreshing health.** On `visibilitychange` to `visible` the page fetches
+only `/api/health` and redraws the status area and the export summary,
+leaving charts and metrics alone. The backend evaluates the ages on every
+request, so a tab that stayed open overnight is current after switching
+back to it. In the message list, `check.export.gap_risk` appends the call
+that closes the gap.
 
 **Coverage note.** If the chosen period reaches beyond what a source covers,
 a sentence naming the period actually present appears instead of an empty

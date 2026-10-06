@@ -58,6 +58,25 @@ frontend looks the key up in the active catalogue (`static/i18n/de.js` or
 | `check.crosscheck.cost_mismatch` | `projectSum`, `monthlySum`, `dates` | `warn` | `sources.py` |
 | `check.rtk.month_mismatch` | `date`, `file`, `month` | `warn` | `sources.py` |
 | `check.rtk.duplicate_date` | `date`, `files` | `warn` | `sources.py` |
+| `source.status.bad_file.not_json` | `file` | `error` | `sources.py` |
+| `source.status.bad_file.not_object` | `file` | `error` | `sources.py` |
+| `source.status.bad_file.schema` | `file` | `error` | `sources.py` |
+| `source.status.bad_file.job_mismatch` | `file`, `job` (expected, from the file name) | `error` | `sources.py` |
+| `source.status.bad_file.timestamp` | `file`, `field` | `error` | `sources.py` |
+| `source.status.bad_file.exit_code` | `file` | `error` | `sources.py` |
+| `source.status.bad_file.targets` | `file` | `error` | `sources.py` |
+| `source.status.bad_file.target_entry` | `file` | `error` | `sources.py` |
+| `source.status.bad_file.lookback` | `file` | `error` | `sources.py` |
+| `source.status.bad_file.lookback_not_allowed` | `file`, `job` | `error` | `sources.py` |
+| `check.export.overdue` | `job`, `lastSuccess`, `ageHours` | `warn` | `sources.py` |
+| `check.export.gap_risk` | `job`, `lastSuccess`, `ageDays`, `lookbackDays`, `suggestedLookback` | `error` | `sources.py` |
+| `check.export.last_failed` | `job`, `lastAttempt`, `exitCode`, `files` | `warn` | `sources.py` |
+| `check.export.last_failed_no_targets` | `job`, `lastAttempt`, `exitCode` | `warn` | `sources.py` |
+| `check.export.last_failed_after_targets` | `job`, `lastAttempt`, `exitCode` | `warn` | `sources.py` |
+| `check.export.success_unrecorded` | `job`, `lastAttempt` | `warn` | `sources.py` |
+| `check.export.future_timestamp` | `job`, `timestamp` | `warn` | `sources.py` |
+| `check.export.never_logged` | `job` | `info` | `sources.py` |
+| `check.export.status_missing` | — | `info` | `sources.py` |
 
 `source.file.unreadable` occurs in both modules: `loader.py` emits it for a
 monthly file, `sources.py` for one of the extra sources. The two mismatch
@@ -143,13 +162,80 @@ anything up against. What is checked instead are the two promises that
 - Does every date belong to the month the file name says?
 - Does every date occur only once?
 
+## Checks on the export status (`sources.check_export_status`)
+
+Unlike every check above, this one depends on the clock. It runs on every
+request on a copy of the health, never inside the cached result (see
+[chapter 3](03-backend.md)). The age is that of the last success, from
+`<job>.ok.json`, at the moment of the request.
+
+| Job | Runs | `warn` when the last success is older than | `error` when older than |
+|---|---|---|---|
+| `daily` | daily at 04:00 | 36 hours | — |
+| `rtk` | daily at 04:15 | 36 hours | — |
+| `weekly` | Sundays at 04:30 | 8 days | the local date is more than `lookbackDays` (from `weekly.ok.json`) days after the local date of the last success |
+| `monthly` | on the 1st at 05:00 | on the 2nd of a month or later, when the last success lies before the 1st of the current month | — |
+
+The monthly rule uses the local calendar of the machine, because launchd
+starts the job in local time. The `weekly` rule is two-staged: from 8 days up
+to `lookbackDays` the next regular run still bridges the gap, so there is only
+the `check.export.overdue` warning; beyond it the next run no longer reaches
+the missing stretch and `check.export.gap_risk` replaces the warning. The
+error threshold counts local calendar dates, not hours: `ccusage-export.sh`
+exports from the local date "today minus `lookbackDays`", so a success on
+date S is still covered by any run up to date S + `lookbackDays`, and the
+error appears from local midnight of S + `lookbackDays` + 1. The other
+thresholds work differently: the `daily` rule and the weekly `overdue`
+warning compare elapsed time, and the monthly rule uses the local calendar
+as described above. The parameter `ageDays` stays the elapsed time in
+days; `suggestedLookback` is that age rounded up, plus 1, which always
+reaches back to the date of the last success;
+the status area shows the call
+`CCUSAGE_DATA_DIR="<data>" CCUSAGE_LOOKBACK_DAYS=<n> "<data>/bin/ccusage-export.sh" weekly`.
+
+Further findings, independent of the age:
+
+- `check.export.success_unrecorded` (`warn`, cause `success_unrecorded`)
+  when the last attempt ended with exit code 0 but there is no valid `ok`
+  file or it is older than `last`. Both files are written with the same
+  content in one step, so the success record was lost; `last` is not taken
+  as a success, the age rules keep running on the older `ok` if there is
+  one.
+- `check.export.last_failed` (`warn`) when the last attempt has an exit code
+  other than 0 and is either newer than the last success or has no valid `ok`
+  file beside it (a missing `ok` with exit code 0 is `success_unrecorded`,
+  not this). The code states what the targets show: `check.export.last_failed`
+  with `files` when targets ended `aborted` or `failed`;
+  `check.export.last_failed_no_targets` when the run stopped before reaching
+  any target; `check.export.last_failed_after_targets` when every target was
+  written or frozen and the run failed afterwards. All three have the cause
+  `last_failed`, or `never_succeeded` when there is no success at all.
+- `check.export.future_timestamp` (`warn`) when a timestamp lies in the
+  future, one message per job with the latest such timestamp. Only a last
+  success in the future suspends the age rules of that job, because its age
+  is then meaningless; a future `last` beside a past `ok` leaves the age
+  rules on that `ok` in force, so `gap_risk` and `overdue` still appear.
+- `check.export.never_logged` (`info`) when `status/` exists but has no file
+  for the job.
+- `check.export.status_missing` (`info`) when `status/` does not exist at all.
+  One message replaces the per-job ones, and every job has state `unknown`.
+  `install.sh --demo` deliberately does not create `status/`, so the demo
+  shows exactly this message ("Export: kein Status"): demo data have no
+  exports to monitor.
+- The `rtk` job is only evaluated when `rtk/` exists.
+- A broken status file gives `source.status.bad_file.<rule>` and counts as
+  absent.
+
+`info` messages do not set `health.ok` to `false`, so a fresh installation
+stays green until a job is actually late.
+
 ## The status area
 
 Shows a summary (files found, accepted, rejected, days loaded, sum checks
 passed) and below it the message list with level, area, key and text.
 
 Areas: `day`, `file`, `projects`, `sessions`, `block`, `wochenlauf` (weekly
-run), `agents`, `kreuzpruefung` (cross-check), `rtk`.
+run), `agents`, `kreuzpruefung` (cross-check), `rtk`, `export`.
 
 ## What to do about a message
 
@@ -164,6 +250,16 @@ run), `agents`, `kreuzpruefung` (cross-check), `rtk`.
 | `check.crosscheck.skipped` | monthly costs cannot be split into Claude and other agents | re-export the month with model or agent breakdowns |
 | `check.weekrun.skipped` (cross-check skipped, `info`) | weekly run aborted after the blocks | look at `logs/weekly.log`, repeat the weekly run |
 | `check.rtk.duplicate_date` (date occurs more than once) | `rtk-merge.py` wrote two monthly files with the same day | look at the affected file, repeat the rtk run |
+| `check.export.overdue` | a run did not happen or failed repeatedly; the machine was off | look at `logs/<job>.log`; trigger the run by hand |
+| `check.export.gap_risk` | the weekly run failed for longer than its lookback | run the call shown in the status area, with the suggested lookback, before the roughly 31 days of source history run out |
+| `check.export.last_failed` | the last run ended with an exit code other than 0 | look at `logs/<job>.log`; the listed files were not updated |
+| `check.export.last_failed_no_targets` | the run stopped before any export, e.g. `ccusage` or `rtk` not found | look at `logs/<job>.log`; repeat the run |
+| `check.export.last_failed_after_targets` | every target was written, a later step such as the log rotation failed | look at `logs/<job>.log`; the data files are current |
+| `check.export.success_unrecorded` | the run succeeded (exit code 0), but `<job>.ok.json` is missing, damaged or older than `<job>.last.json` | look at `logs/<job>.log`; repeat the run |
+| `check.export.future_timestamp` | the clock ran ahead, or the status file was edited | check the system clock; repeat the run |
+| `check.export.never_logged` | the job has not run since `status/` exists | wait for the next run or trigger it by hand |
+| `check.export.status_missing` | installation predates the status files, or demo mode | existing installations: `./install.sh --force`, see [chapter 7](07-installation.md) |
+| `source.status.bad_file.<rule>` | status file damaged or hand-edited | repeat the run; it rewrites the file |
 
 Every run can be triggered by hand, see [chapter 7](07-installation.md).
 

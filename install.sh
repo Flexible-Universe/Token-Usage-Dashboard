@@ -26,9 +26,9 @@ FORCE=0
 DRY_RUN=0
 DEMO_MODE=0
 
-SKRIPTE=(ccusage-export.sh rtk-export.sh ccusage-check.py ccusage-merge.py rtk-merge.py)
+SKRIPTE=(ccusage-export.sh rtk-export.sh ccusage-check.py ccusage-merge.py rtk-merge.py export-status.py)
 JOBS=(ccusage-daily ccusage-weekly ccusage-monthly rtk-daily)
-UNTERVERZEICHNISSE=(bin logs projects sessions blocks rtk)
+UNTERVERZEICHNISSE=(bin logs projects sessions blocks rtk status)
 
 # Gesammelte Hinweise. Sie erscheinen am Ende noch einmal, damit ein
 # uebersprungener Schritt nicht in der laufenden Ausgabe untergeht.
@@ -134,14 +134,53 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 
 LIVE_WERKZEUGE=0
-for werkzeug in ccusage rtk; do
-    if command -v "$werkzeug" >/dev/null 2>&1; then
-        tat "$werkzeug gefunden: $(command -v "$werkzeug")"
+if command -v ccusage >/dev/null 2>&1; then
+    tat "ccusage gefunden: $(command -v ccusage)"
+    LIVE_WERKZEUGE=$((LIVE_WERKZEUGE + 1))
+else
+    hinweis "ccusage ist nicht im Pfad. Das Dashboard laeuft trotzdem, es zeigt dann nur, was schon im Datenverzeichnis liegt."
+fi
+
+# Entscheidet genau wie der launchd-Job: dieselbe Suchreihenfolge wie find_rtk
+# in export/rtk-export.sh (RTK_BIN, feste Pfade, dann command -v), wobei
+# command -v mit dem Standardpfad von launchd laeuft, nicht mit dem der
+# Shell. Ein rtk, das nur ueber ~/.cargo/bin erreichbar ist, findet der Job
+# nie und meldete dauerhaft einen Fehler. Beide Funktionen muessen
+# gleichlaufen (install.sh laeuft aus dem Repository, rtk-export.sh aus
+# <daten>/bin; eine gemeinsame Datei gaebe es nur als Laufzeitabhaengigkeit).
+# Danach dieselbe JSON-Pruefung wie dort: der Name kollidiert mit Rust Type
+# Kit.
+finde_rtk() {
+    if [ -n "${RTK_BIN:-}" ] && [ -x "$RTK_BIN" ]; then
+        printf '%s' "$RTK_BIN"; return 0
+    fi
+    # RTK_SEARCH_DIRS (durch Doppelpunkt getrennt) ersetzt die festen
+    # Verzeichnisse: fuer Tests und ungewoehnliche Installationen. Ein leerer
+    # Wert heisst bewusst "keine festen Verzeichnisse".
+    local verzeichnis kandidat
+    local -a suchpfade
+    IFS=: read -ra suchpfade <<<"${RTK_SEARCH_DIRS-/opt/homebrew/bin:/usr/local/bin}" || true
+    for verzeichnis in ${suchpfade[@]+"${suchpfade[@]}"}; do
+        kandidat="$verzeichnis/rtk"
+        [ -n "$verzeichnis" ] && [ -x "$kandidat" ] && { printf '%s' "$kandidat"; return 0; }
+    done
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin command -v rtk 2>/dev/null && return 0
+    return 1
+}
+
+RTK_OK=0
+if RTK_PFAD="$(finde_rtk)"; then
+    if "$RTK_PFAD" gain --format json 2>/dev/null \
+            | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+        tat "rtk gefunden: $RTK_PFAD"
+        RTK_OK=1
         LIVE_WERKZEUGE=$((LIVE_WERKZEUGE + 1))
     else
-        hinweis "$werkzeug ist nicht im Pfad. Das Dashboard laeuft trotzdem, es zeigt dann nur, was schon im Datenverzeichnis liegt."
+        hinweis "rtk gefunden ($RTK_PFAD), liefert aber kein JSON (gain --format json). Vermutlich ein anderes Programm gleichen Namens. rtk/ und der Job rtk-daily werden nicht eingerichtet."
     fi
-done
+else
+    hinweis "rtk wurde nicht dort gefunden, wo der launchd-Job es sucht (RTK_BIN, /opt/homebrew/bin, /usr/local/bin, Standardpfad von launchd). rtk/ und der Job rtk-daily werden nicht eingerichtet. Nach der Installation von rtk (etwa per Homebrew) ./install.sh erneut aufrufen."
+fi
 
 if [ "$LIVE_WERKZEUGE" -eq 0 ]; then
     printf '\n  Fuer Live-Daten muss mindestens eines der Programme ccusage oder RTK installiert sein.\n'
@@ -196,6 +235,17 @@ done
 schritt "Datenverzeichnis"
 
 for unter in "" "${UNTERVERZEICHNISSE[@]}"; do
+    # Im Demo-Modus fehlt status/ absichtlich: Nur ein fehlendes Verzeichnis
+    # ergibt im Dashboard "kein Status" (status_missing); ein leeres zeigte
+    # jeden Job als nie protokolliert.
+    if [ "$DEMO_MODE" -eq 1 ] && [ "$unter" = "status" ]; then
+        continue
+    fi
+    # rtk/ gibt es nur, wenn rtk laeuft (oder Demo-Daten es fuellen): ein
+    # vorhandenes Verzeichnis laesst das Dashboard rtk-Exporte erwarten.
+    if [ "$unter" = "rtk" ] && [ "$RTK_OK" -eq 0 ] && [ "$DEMO_MODE" -eq 0 ]; then
+        continue
+    fi
     ziel="$DATA_DIR${unter:+/$unter}"
     if [ -d "$ziel" ]; then
         tat "vorhanden: ${unter:-.}"
@@ -206,6 +256,25 @@ for unter in "" "${UNTERVERZEICHNISSE[@]}"; do
         tat "angelegt: $ziel"
     fi
 done
+
+# Bestehende Installation ohne rtk: ein leeres rtk/ und der geladene Job
+# stammen aus einer frueheren Fassung. Nichts wird geloescht.
+if [ "$RTK_OK" -eq 0 ] && [ "$DEMO_MODE" -eq 0 ]; then
+    rtk_leer=0
+    if [ -d "$DATA_DIR/rtk" ]; then
+        rtk_leer=1
+        for rtk_datei in "$DATA_DIR"/rtk/????-??.json; do
+            [ -f "$rtk_datei" ] && rtk_leer=0
+        done
+    fi
+    rtk_job_plist=0
+    for rtk_plist in "$HOME"/Library/LaunchAgents/*.rtk-daily.plist; do
+        [ -f "$rtk_plist" ] && rtk_job_plist=1
+    done
+    if [ "$rtk_leer" -eq 1 ] || [ "$rtk_job_plist" -eq 1 ]; then
+        hinweis "Fruehere Installation ohne rtk: Bitte von Hand aufraeumen, sonst meldet das Dashboard dauerhaft einen rtk-Exportfehler. Das leere Verzeichnis $DATA_DIR/rtk und die Dateien $DATA_DIR/status/rtk.*.json entfernen, den Job entladen (launchctl unload ~/Library/LaunchAgents/*.rtk-daily.plist) und die plist-Datei loeschen. Es wird nichts automatisch geloescht."
+    fi
+fi
 
 if [ "$DEMO_MODE" -eq 1 ]; then
     schritt "Demo-Daten"
@@ -308,6 +377,10 @@ if [ "$WITH_LAUNCHAGENTS" -eq 1 ]; then
     fi
 
     for job in "${JOBS[@]}"; do
+        if [ "$job" = "rtk-daily" ] && [ "$RTK_OK" -eq 0 ]; then
+            hinweis "Job rtk-daily wird nicht eingerichtet, weil kein funktionierendes rtk gefunden wurde."
+            continue
+        fi
         vorlage="$REPO_DIR/export/launchd/$job.plist.template"
         [ -f "$vorlage" ] || fehler "$vorlage fehlt. Ist das Repository vollstaendig?"
         label="$LABEL_PREFIX.$job"
