@@ -130,8 +130,20 @@ field `project`.
 
 ## Sessions (`insights.session_insights`)
 
-Count, median and maximum of the costs, median duration, the `TOP_SESSIONS`
-(20) most expensive sessions.
+Count, median and maximum of the costs, median duration, and the sessions
+of the requested page. there is no cap on the top sessions any more: the table lists all
+sessions, `SESSION_PAGE_SIZE` (50) per page.
+
+**Project filter.** The KPIs and the histogram follow the project filter, so
+the median above the table belongs to the table. The list of projects for the
+selection is built before the filter and therefore stays complete.
+
+**Sorting.** The keys map to `start` to `first`, `duration` to
+`durationMinutes`, `project` to `projectLabel`, `cost` to `totalCost` and
+`tokens` to `totalTokens`. A missing value (today only the duration) always
+sorts last, in both directions. On a tie the `sessionId` decides, ascending
+and independent of the direction, so page boundaries stay stable. Texts are
+compared with `str.casefold`.
 
 **The histogram.** Class bounds `0.10 / 1 / 5 / 20 / 50 $`, left-closed: a
 value of exactly 50 falls into the top class, not the one below. The result

@@ -222,6 +222,15 @@ class MetricValueTests(unittest.TestCase):
         self.assertEqual([m["model"] for m in top[1]["models"]],
                          ["claude-opus-5", "claude-sonnet-5"])
 
+    def test_metrics_list_only_the_ten_most_expensive_days(self):
+        days = build([
+            old_day("2026-05-%02d" % d, [breakdown("claude-opus-5", 10, 10, 0, 0, float(d))])
+            for d in range(1, 13)
+        ])
+        top = metrics.compute_metrics(days)["topDays"]
+        self.assertEqual([d["totalCost"] for d in top],
+                         [float(d) for d in range(12, 2, -1)])
+
     def test_zero_tokens_do_not_divide_by_zero(self):
         days = build([old_day("2026-05-01", [breakdown("claude-opus-5", 0, 0, 0, 0, 0.0)])])
         series = metrics.daily_series(days)

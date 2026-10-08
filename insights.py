@@ -13,6 +13,7 @@ Monatsdateien arbeitet.
 
 from __future__ import annotations
 
+import math
 import statistics
 
 import loader
@@ -191,7 +192,12 @@ def project_insights(rows: list[dict], date_from: str | None = None,
             "table": table, "coverage": cov}
 
 
-TOP_SESSIONS = 20
+SESSION_PAGE_SIZE = 50
+# Sort key of the API -> field of the session row.
+SESSION_SORT_FIELDS = {
+    "start": "first", "duration": "durationMinutes", "project": "projectLabel",
+    "cost": "totalCost", "tokens": "totalTokens",
+}
 HISTOGRAM_BOUNDS = (0.10, 1.0, 5.0, 20.0, 50.0)
 # The class bounds are closed on the left: a value of exactly 50 goes into
 # the top class, not the one below. The label says so. The labels
@@ -214,18 +220,57 @@ def _histogram(costs: list[float]) -> dict:
     return {"bounds": list(HISTOGRAM_BOUNDS), "counts": counts, "cost": sums}
 
 
+def _sorted_sessions(selected: list[dict], key: str, direction: str) -> list[dict]:
+    """Sort with None last in both directions and sessionId ascending on ties."""
+    field = SESSION_SORT_FIELDS[key]
+
+    def value(row):
+        v = row[field]
+        return v.casefold() if isinstance(v, str) else v
+
+    # Two stable passes: the tie-break must not flip with the direction.
+    ordered = sorted(selected, key=lambda r: r["sessionId"])
+    present = sorted((r for r in ordered if r[field] is not None), key=value,
+                     reverse=direction == "desc")
+    return present + [r for r in ordered if r[field] is None]
+
+
 def session_insights(rows: list[dict], date_from: str | None = None,
                      date_to: str | None = None,
-                     models: list[str] | None = None) -> dict:
-    """KPIs, teuerste Sessions und Kostenverteilung."""
+                     models: list[str] | None = None, *,
+                     project: str = "", sort: str = "cost",
+                     dir: str = "desc", page: int = 1) -> dict:
+    """KPIs, one sorted page of sessions and the cost distribution."""
     cov = coverage([r["date"] for r in rows], date_from, date_to)
-    selected = filter_rows(rows, date_from, date_to, models)
+    in_range = filter_rows(rows, date_from, date_to, models)
+
+    # Built before the project filter, otherwise the choice list would
+    # shrink to the selected entry.
+    counts: dict[str, dict] = {}
+    for r in in_range:
+        entry = counts.setdefault(r["project"], {
+            "project": r["project"], "projectLabel": r["projectLabel"],
+            "sessions": 0})
+        entry["sessions"] += 1
+    projects = sorted(counts.values(),
+                      key=lambda e: (e["projectLabel"].casefold(), e["project"]))
+
+    selected = [r for r in in_range if r["project"] == project] if project \
+        else in_range
 
     costs = [r["totalCost"] for r in selected]
     durations = [r["durationMinutes"] for r in selected
                  if r["durationMinutes"] is not None]
-    ranked = sorted(selected, key=lambda r: -r["totalCost"])
-    top = [
+    top_session = min(selected,
+                      key=lambda r: (-r["totalCost"], r["sessionId"]),
+                      default=None)
+
+    total = len(selected)
+    pages = max(1, math.ceil(total / SESSION_PAGE_SIZE))
+    number = min(page, pages)
+    start = (number - 1) * SESSION_PAGE_SIZE
+    ordered = _sorted_sessions(selected, sort, dir)
+    shown = [
         {
             "sessionId": r["sessionId"],
             "project": r["project"],
@@ -238,22 +283,25 @@ def session_insights(rows: list[dict], date_from: str | None = None,
             "modelsUsed": r["modelsUsed"],
             "costPerMillion": _cost_per_million(r["totalCost"], r["totalTokens"]),
         }
-        for r in ranked[:TOP_SESSIONS]
+        for r in ordered[start:start + SESSION_PAGE_SIZE]
     ]
 
     kpis = {
         "sessionCount": len(selected),
         "medianCost": statistics.median(costs) if costs else None,
         "maxCost": max(costs) if costs else None,
-        "maxSessionId": ranked[0]["sessionId"] if ranked else None,
-        "maxSessionProject": ranked[0]["projectLabel"] if ranked else None,
+        "maxSessionId": top_session["sessionId"] if top_session else None,
+        "maxSessionProject": top_session["projectLabel"] if top_session else None,
         "medianDurationMinutes":
             round(statistics.median(durations)) if durations else None,
         "totalCost": sum(costs),
         "totalTokens": sum(r["totalTokens"] for r in selected),
     }
-    return {"kpis": kpis, "top": top, "histogram": _histogram(costs),
-            "coverage": cov}
+    return {"kpis": kpis, "rows": shown, "projects": projects,
+            "page": {"number": number, "size": SESSION_PAGE_SIZE,
+                     "total": total, "pages": pages},
+            "sort": {"key": sort, "dir": dir}, "project": project,
+            "histogram": _histogram(costs), "coverage": cov}
 
 
 def block_insights(rows: list[dict], date_from: str | None = None,

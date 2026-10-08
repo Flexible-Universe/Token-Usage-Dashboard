@@ -35,6 +35,9 @@ const PALETTE = [
 // A fixed grey also keeps it visually apart from the named models.
 const OTHER_COLOR = '#8b8b8b';
 
+// Declared before state, which starts from it; the sessions helpers share it.
+const SESSIONS_DEFAULT_VIEW = { project: '', sort: 'cost', dir: 'desc', page: 1 };
+
 const state = {
   data: null,
   metrics: null,
@@ -50,8 +53,21 @@ const state = {
   tab: 'overview',
   projects: null,
   sessions: null,
+  // Server-side view of the sessions table; sorting and paging happen in
+  // the backend, so the state is sent with every request.
+  sessionsView: { ...SESSIONS_DEFAULT_VIEW },
   blocks: null,
-  rtk: null
+  rtk: null,
+  // Defaults equal the order the backend delivers, so nothing changes
+  // until the first click.
+  sort: {
+    'model-table': { key: 'cost', dir: 'desc' },
+    'month-table': { key: 'month', dir: 'asc' },
+    'topdays-table': { key: 'totalCost', dir: 'desc' },
+    'file-table': { key: 'name', dir: 'asc' },
+    'projects-table': { key: 'cost', dir: 'desc' },
+    'rtk-month-table': { key: 'month', dir: 'asc' }
+  }
 };
 
 const charts = {};
@@ -131,6 +147,20 @@ function measureValue(value) {
   return state.measure === 'cost' ? euroLessDollar(value, 2) : num(value, 0);
 }
 
+// Sums the values shown in the tooltip; hidden datasets are absent from the items.
+function stackTotal(values) {
+  let sum = null;
+  for (const value of values) {
+    if (typeof value === 'number') sum = (sum === null ? 0 : sum) + value;
+  }
+  return sum;
+}
+// Chart.js shows no footer for an empty string.
+function stackFooter(items) {
+  const sum = stackTotal(items.map((item) => item.parsed.y));
+  return sum === null ? '' : t('ui.chart.total', { value: measureValue(sum) });
+}
+
 /* ---------- Farben ---------- */
 function colorFor(model) {
   if (!state.modelColors.has(model)) {
@@ -146,9 +176,10 @@ function cssVar(name) {
 // apiQuery: baut die Parameter fuer /api/metrics und fuer die drei
 // Reiter-Endpunkte. Alle vier nehmen dieselben Parameter, deshalb nur ein
 // Helfer. Rueckgabe schliesst das Fragezeichen ein oder ist leer.
-function apiQuery(reload) {
+function apiQuery(reload, extra) {
   const params = new URLSearchParams();
   if (reload) params.set('reload', '1');
+  Object.entries(extra || {}).forEach(([name, value]) => params.set(name, value));
   const range = activeRange();
   if (range.from) params.set('from', range.from);
   if (range.to) params.set('to', range.to);
@@ -213,7 +244,8 @@ async function loadAll(reload) {
     state.data = data;
     data.models.forEach(colorFor);
     if (isFirst) {
-      data.models.forEach((m) => state.selectedModels.add(m));
+      // Models from the hash replace the "all" preselection.
+      applyViewFromHash();
     } else {
       // Neu hinzugekommene Modelle werden automatisch mitgewaehlt.
       data.models.filter((m) => !known.has(m)).forEach((m) => state.selectedModels.add(m));
@@ -230,6 +262,8 @@ async function loadAll(reload) {
     // Ohne das bleibt der sichtbare Reiter nach "Daten neu laden" stehen,
     // waehrend Statusbereich und Uebersicht sich aktualisieren.
     renderTab(reload);
+    // buildPeriodOptions may have replaced a vanished month silently.
+    syncHash('replace');
     document.getElementById('last-load').textContent =
       t('ui.app.laststate', { time: new Date().toLocaleTimeString(state.locale) });
   } catch (error) {
@@ -266,26 +300,249 @@ async function refreshMetrics() {
 
 /* ---------- Reiter ---------- */
 const TABS = ['overview', 'projects', 'sessions', 'blocks', 'rtk'];
-const TAB_STORAGE_KEY = 'dashboard.tab';
 
-// Der Zugriff auf sessionStorage kann werfen, etwa wenn der Browser
-// Speicherung fuer die Seite sperrt. Das darf das Dashboard nicht anhalten,
-// deshalb faellt beides still auf den Reiter Uebersicht zurueck.
-function storedTab() {
+const MEASURES = ['cost', 'tokens'];
+const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
+// Mirrors insights.SESSION_SORT_FIELDS; the backend rejects anything else.
+const SESSION_SORT_KEYS = ['start', 'duration', 'project', 'cost', 'tokens'];
+const SESSION_SORT_DIRS = ['asc', 'desc'];
+
+function isIsoDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
+}
+
+function safeDecode(text) {
   try {
-    const name = window.sessionStorage.getItem(TAB_STORAGE_KEY);
-    return TABS.includes(name) ? name : TABS[0];
+    return decodeURIComponent(text);
   } catch (error) {
-    return TABS[0];
+    return null;
   }
 }
 
-function rememberTab(name) {
-  try {
-    window.sessionStorage.setItem(TAB_STORAGE_KEY, name);
-  } catch (error) {
-    // Kein Speicher verfuegbar: die Auswahl gilt dann nur fuer diese Sicht.
+// Syntax-only reading of the hash. A value that is not well formed becomes
+// the default (or '' for dates), so resolveView sees only usable shapes;
+// the keys that had to be replaced are listed in invalid.
+// models is null when the key is absent ("all") and [] for "models=" ("none").
+// Undecodable or empty model entries stay in the list as unusable names, so a
+// non-empty list is never mistaken for "none".
+function parseViewHash(hash) {
+  const values = {};
+  String(hash || '').replace(/^#/, '').split('&').forEach((pair) => {
+    const index = pair.indexOf('=');
+    if (index <= 0) return;
+    values[pair.slice(0, index)] = pair.slice(index + 1);
+  });
+  const decoded = (key) => (key in values ? safeDecode(values[key]) : null);
+  const tab = decoded('tab');
+  const period = decoded('period');
+  const measure = decoded('measure');
+  const from = decoded('from');
+  const to = decoded('to');
+  let models = null;
+  if ('models' in values) {
+    models = values.models === '' ? [] : values.models.split(',').map(safeDecode);
   }
+  const project = decoded('project');
+  const sortText = decoded('sort');
+  const pageText = decoded('page');
+  const split = (sortText || '').lastIndexOf('-');
+  const sortKey = split > 0 ? sortText.slice(0, split) : '';
+  const sortDir = split > 0 ? sortText.slice(split + 1) : '';
+  const sortOk = SESSION_SORT_KEYS.includes(sortKey) && SESSION_SORT_DIRS.includes(sortDir);
+  // The digit cap keeps Number exact; a larger value would reach the
+  // backend in exponent notation and be answered with a 400.
+  const pageOk = /^[1-9]\d{0,8}$/.test(pageText || '')
+    && Number.isSafeInteger(Number(pageText));
+  const periodOk = period === 'all' || period === 'custom' || MONTH_PATTERN.test(period || '');
+  const invalid = [];
+  if ('tab' in values && !TABS.includes(tab)) invalid.push('tab');
+  if ('period' in values && !periodOk) invalid.push('period');
+  if ('measure' in values && !MEASURES.includes(measure)) invalid.push('measure');
+  if ('from' in values && !(from && isIsoDate(from))) invalid.push('from');
+  if ('to' in values && !(to && isIsoDate(to))) invalid.push('to');
+  if ('project' in values && project === null) invalid.push('project');
+  if ('sort' in values && !sortOk) invalid.push('sort');
+  if ('page' in values && !pageOk) invalid.push('page');
+  return {
+    sessions: {
+      project: project === null ? SESSIONS_DEFAULT_VIEW.project : project,
+      sort: sortOk ? sortKey : SESSIONS_DEFAULT_VIEW.sort,
+      dir: sortOk ? sortDir : SESSIONS_DEFAULT_VIEW.dir,
+      page: pageOk ? Number(pageText) : SESSIONS_DEFAULT_VIEW.page
+    },
+    tab: TABS.includes(tab) ? tab : TABS[0],
+    period: periodOk ? period : 'all',
+    from: from && isIsoDate(from) ? from : '',
+    to: to && isIsoDate(to) ? to : '',
+    measure: MEASURES.includes(measure) ? measure : MEASURES[0],
+    models,
+    invalid
+  };
+}
+
+// Checks a parsed hash against the loaded data. fallbacks lists what had to
+// be replaced, so the caller can warn and rewrite a cleaned address.
+function resolveView(raw, data) {
+  const fallbacks = [...(raw.invalid || [])];
+  let period = raw.period;
+  let from = '';
+  let to = '';
+  if (period === 'custom') {
+    if (raw.from && raw.to && raw.from <= raw.to) {
+      from = raw.from;
+      to = raw.to;
+    } else {
+      period = 'all';
+      // One note for the range, not one more per broken date.
+      fallbacks.splice(0, fallbacks.length,
+        ...fallbacks.filter((key) => key !== 'from' && key !== 'to'), 'range');
+    }
+  } else if (period !== 'all' && !data.months.includes(period)) {
+    period = 'all';
+    fallbacks.push('period');
+  }
+  let models;
+  if (raw.models === null) {
+    models = [...data.models];
+  } else {
+    const wanted = [...new Set(raw.models)];
+    models = wanted.filter((name) => data.models.includes(name));
+    if (models.length !== wanted.length) fallbacks.push('models');
+    // An unusable non-empty list would otherwise read as "none".
+    if (wanted.length && !models.length) models = [...data.models];
+  }
+  // The sessions values travel beside the view: whether a project exists is
+  // only known after /api/sessions answers (see checkSessionsView).
+  return {
+    view: { tab: raw.tab, period, from, to, measure: raw.measure, models },
+    sessions: Object.assign({}, raw.sessions || SESSIONS_DEFAULT_VIEW),
+    fallbacks
+  };
+}
+
+// Defaults are left out, so the default view has no hash at all.
+function formatViewHash(view, allModels, sessionsView = SESSIONS_DEFAULT_VIEW) {
+  const parts = [];
+  if (view.tab !== TABS[0]) parts.push('tab=' + encodeURIComponent(view.tab));
+  if (view.period !== 'all') parts.push('period=' + encodeURIComponent(view.period));
+  if (view.period === 'custom') {
+    parts.push('from=' + encodeURIComponent(view.from));
+    parts.push('to=' + encodeURIComponent(view.to));
+  }
+  if (view.measure !== MEASURES[0]) parts.push('measure=' + encodeURIComponent(view.measure));
+  const selected = new Set(view.models);
+  const everything = allModels.length === selected.size
+    && allModels.every((name) => selected.has(name));
+  // Data order, not click order: one selection must give one address.
+  if (!everything) {
+    parts.push('models=' + allModels.filter((name) => selected.has(name))
+      .map(encodeURIComponent).join(','));
+  }
+  // Independent of the active tab, so leaving and re-entering Sessions
+  // finds the same state.
+  if (sessionsView.project !== SESSIONS_DEFAULT_VIEW.project) {
+    parts.push('project=' + encodeURIComponent(sessionsView.project));
+  }
+  if (sessionsView.sort !== SESSIONS_DEFAULT_VIEW.sort
+    || sessionsView.dir !== SESSIONS_DEFAULT_VIEW.dir) {
+    parts.push('sort=' + encodeURIComponent(sessionsView.sort + '-' + sessionsView.dir));
+  }
+  if (sessionsView.page !== SESSIONS_DEFAULT_VIEW.page) {
+    parts.push('page=' + encodeURIComponent(sessionsView.page));
+  }
+  return parts.length ? '#' + parts.join('&') : '';
+}
+
+// The hash last applied or written. The browser fires both popstate and
+// hashchange for one fragment change; comparing against this runs it once.
+let appliedHash = '';
+
+function currentView() {
+  return {
+    tab: state.tab,
+    period: state.period,
+    from: state.period === 'custom' ? state.from : '',
+    to: state.period === 'custom' ? state.to : '',
+    measure: state.measure,
+    models: [...state.selectedModels]
+  };
+}
+
+function syncHash(mode) {
+  // Before /api/data there is no model list to compare against; the
+  // replace at the end of loadAll writes the hash then.
+  if (!state.data) return;
+  const hash = formatViewHash(currentView(), state.data.models, state.sessionsView);
+  if (hash === location.hash) {
+    appliedHash = hash;
+    return;
+  }
+  const url = location.pathname + location.search + hash;
+  if (mode === 'push') history.pushState(null, '', url);
+  else history.replaceState(null, '', url);
+  appliedHash = hash;
+}
+
+// Sets state and controls from a resolved view. The caller rebuilds the
+// model filter and loads data.
+function applyView(view) {
+  applyTab(view.tab);
+  state.measure = view.measure;
+  document.getElementById('measure').value = view.measure;
+  state.selectedModels = new Set(view.models);
+  document.getElementById('period').value = view.period;
+  if (view.period === 'custom') {
+    state.period = 'custom';
+    state.from = view.from;
+    state.to = view.to;
+    document.getElementById('date-from').value = view.from;
+    document.getElementById('date-to').value = view.to;
+    toggleRangeInputs();
+  } else {
+    applyPeriod(view.period);
+  }
+}
+
+function applyViewFromHash() {
+  const { view, sessions, fallbacks } = resolveView(parseViewHash(location.hash), state.data);
+  applyView(view);
+  state.sessionsView = sessions;
+  appliedHash = location.hash;
+  if (fallbacks.length) {
+    console.warn('URL hash adjusted: ' + fallbacks.join(', '));
+    syncHash('replace');
+  }
+}
+
+function onHashNavigation() {
+  if (!state.data) return;
+  if (location.hash === appliedHash) return;
+  const before = JSON.stringify([
+    state.period, state.from, state.to, [...state.selectedModels].sort()]);
+  const measureBefore = state.measure;
+  const tabBefore = state.tab;
+  const sessionsBefore = JSON.stringify(state.sessionsView);
+  applyViewFromHash();
+  buildModelFilter(state.data);
+  const after = JSON.stringify([
+    state.period, state.from, state.to, [...state.selectedModels].sort()]);
+  if (before !== after) {
+    refreshMetrics();
+    return;
+  }
+  // The measure only changes how loaded data is drawn, as in its own handler.
+  if (state.measure !== measureBefore && state.metrics) renderCharts(state.metrics);
+  // Sessions reload only when they are shown anew or their own values changed.
+  if (state.tab === 'sessions' && tabBefore === 'sessions'
+    && JSON.stringify(state.sessionsView) === sessionsBefore) {
+    redrawActiveTab();
+    return;
+  }
+  renderTab();
 }
 
 // applyTab setzt nur Zustand und Sichtbarkeit, ohne zu laden. Der Seitenaufbau
@@ -303,7 +560,7 @@ function applyTab(name) {
 function setTab(name) {
   if (!TABS.includes(name)) return;
   applyTab(name);
-  rememberTab(name);
+  syncHash('push');
   renderTab();
 }
 
@@ -344,6 +601,61 @@ function redrawActiveTab() {
   if (state.tab === 'sessions' && state.sessions) { renderSessions(); }
   if (state.tab === 'blocks' && state.blocks) { renderBlocks(); }
   if (state.tab === 'rtk' && state.rtk) { renderRtk(); }
+}
+
+/* ---------- Sorting of local tables ---------- */
+// Pure: returns a new array. Missing values go last in both directions, so
+// they are handled before the direction is applied. Array.prototype.sort is
+// stable, which keeps equal keys in their delivered order.
+function sortRows(rows, key, dir, locale) {
+  const collator = new Intl.Collator(locale, { numeric: true });
+  const sign = dir === 'desc' ? -1 : 1;
+  const missing = (value) => value === null || value === undefined;
+  return rows.slice().sort((a, b) => {
+    const x = a[key];
+    const y = b[key];
+    if (missing(x) || missing(y)) return missing(x) - missing(y);
+    if (typeof x === 'number' && typeof y === 'number') return sign * (x - y);
+    if (typeof x === 'boolean' && typeof y === 'boolean') return sign * (Number(x) - Number(y));
+    return sign * collator.compare(String(x), String(y));
+  });
+}
+
+// Keeps the arrow (drawn from aria-sort in CSS) in step with state.sort;
+// every local renderer calls it so arrow and row order cannot drift apart.
+function applySortAria(tableId, current = state.sort[tableId]) {
+  document.querySelectorAll(`#${tableId} thead th[data-sort]`).forEach((th) => {
+    const active = th.dataset.sort === current.key;
+    th.setAttribute('aria-sort',
+      active ? (current.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+  });
+}
+
+const SORT_REDRAW = {
+  'model-table': () => state.metrics && renderModelTable(state.metrics),
+  'month-table': () => state.metrics && renderMonthTable(state.metrics),
+  'topdays-table': () => state.metrics && renderTopDays(state.metrics),
+  'file-table': () => state.data && renderFiles(state.data),
+  'projects-table': () => state.projects && renderProjects(),
+  'rtk-month-table': () => state.rtk && renderRtk()
+};
+
+// Pure: a click on the active column flips its direction, any other column
+// starts in its first direction.
+function nextSort(current, key, first = 'desc') {
+  if (current.key === key) {
+    return { key, dir: current.dir === 'asc' ? 'desc' : 'asc' };
+  }
+  return { key, dir: first };
+}
+
+function onSortClick(tableId, event) {
+  const th = event.target.closest('th[data-sort]');
+  if (!th) return;
+  // state.sort entries are mutated in place, other code holds them.
+  Object.assign(state.sort[tableId],
+    nextSort(state.sort[tableId], th.dataset.sort, th.dataset.sortFirst || 'desc'));
+  SORT_REDRAW[tableId]();
 }
 
 /* ---------- Projekte ---------- */
@@ -387,7 +699,9 @@ function renderProjects() {
 
   const body = document.querySelector('#projects-table tbody');
   body.innerHTML = '';
-  payload.table.forEach((row) => {
+  applySortAria('projects-table');
+  const sort = state.sort['projects-table'];
+  sortRows(payload.table, sort.key, sort.dir, state.locale).forEach((row) => {
     const tr = document.createElement('tr');
     const name = document.createElement('td');
     name.textContent = row.projectLabel;
@@ -419,7 +733,12 @@ function renderProjects() {
     },
     options: Object.assign({}, base, {
       plugins: Object.assign({}, base.plugins, {
-        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${measureValue(c.parsed.y)}` } }
+        tooltip: {
+          callbacks: {
+            label: (c) => c.parsed.y === null ? null : `${c.dataset.label}: ${measureValue(c.parsed.y)}`,
+            footer: stackFooter
+          }
+        }
       }),
       scales: Object.assign({}, base.scales, {
         x: Object.assign({}, base.scales.x, { stacked: true }),
@@ -467,9 +786,129 @@ function histogramLabels(bounds) {
   ).concat(t('ui.sessions.hist.above', { min: bounds[bounds.length - 1] }));
 }
 
+// A change of any of these invalidates the current page number; the
+// measure only redraws the histogram, so it is deliberately not listed.
+const SESSIONS_PAGE_RESET = new Set(['period', 'models', 'project', 'sort']);
+let sessionsRequestId = 0;
+
+// Pure: returns a new view, the input stays untouched.
+function sessionsViewAfter(view, cause) {
+  return Object.assign({}, view,
+    SESSIONS_PAGE_RESET.has(cause) ? { page: 1 } : {});
+}
+
+function resetSessionsPage(cause) {
+  // Anything still in flight was asked for the old page.
+  sessionsRequestId += 1;
+  state.sessionsView = sessionsViewAfter(state.sessionsView, cause);
+}
+
+// Defaults are left out so the common request stays a plain filter query.
+function sessionsParams(view) {
+  const params = {};
+  Object.keys(SESSIONS_DEFAULT_VIEW).forEach((name) => {
+    if (view[name] !== SESSIONS_DEFAULT_VIEW[name]) params[name] = String(view[name]);
+  });
+  return params;
+}
+
+// Option texts for the project select. The label alone can be ambiguous
+// (two paths, one directory name), so duplicates show the key as well.
+// A selected project that has no sessions in the current period or model
+// selection is a valid filter without matches, so it stays selectable.
+function sessionProjectOptions(projects, selected = '') {
+  const seen = new Map();
+  projects.forEach((p) => seen.set(p.projectLabel, (seen.get(p.projectLabel) || 0) + 1));
+  const total = projects.reduce((sum, p) => sum + p.sessions, 0);
+  const options = [{ value: '', text: t('ui.sessions.filter.all', { count: total }) }].concat(
+    projects.map((p) => ({
+      value: p.project,
+      text: seen.get(p.projectLabel) > 1
+        ? t('ui.sessions.filter.option_path',
+          { label: p.projectLabel, project: p.project, count: p.sessions })
+        : t('ui.sessions.filter.option', { label: p.projectLabel, count: p.sessions })
+    })));
+  if (selected !== '' && !projects.some((p) => p.project === selected)) {
+    options.push({
+      value: selected,
+      text: t('ui.sessions.filter.option', { label: selected, count: 0 })
+    });
+  }
+  return options;
+}
+
 async function loadSessions(reload) {
-  state.sessions = await getJSON('/api/sessions' + apiQuery(reload));
+  // Only the newest request may draw, otherwise page 2 arriving after
+  // page 3 would overwrite it.
+  const requestId = ++sessionsRequestId;
+  // The reply is checked against the view it was requested for: a reply for
+  // an older view must not undo a page reset made while it was in flight.
+  const requested = state.sessionsView;
+  let result;
+  try {
+    result = await getJSON('/api/sessions'
+      + apiQuery(reload, sessionsParams(requested)));
+  } catch (error) {
+    if (requestId !== sessionsRequestId) return;
+    throw error;
+  }
+  if (requestId !== sessionsRequestId || state.sessionsView !== requested) return;
+  const checked = checkSessionsView(requested, result);
+  state.sessionsView = checked.view;
+  if (checked.reported.length) {
+    console.warn('URL hash adjusted: ' + checked.reported.join(', '));
+    syncHash('replace');
+  }
+  state.sessions = result;
   renderSessions();
+}
+
+// Content check of the requested view against the answer; /api/data knows no
+// projects, so resolveView cannot do it. Pure: the input stays untouched.
+// An unknown project is a valid filter without matches (the API echoes it
+// back), so it is kept; a clamped page number needs no new request.
+function checkSessionsView(requested, response) {
+  const view = Object.assign({}, requested);
+  const reported = [];
+  if (response.page.number !== view.page) {
+    view.page = response.page.number;
+    reported.push('page');
+  }
+  return { view, reported };
+}
+
+function changeSessionsView(cause, change) {
+  state.sessionsView = sessionsViewAfter(Object.assign({}, state.sessionsView, change), cause);
+  syncHash('push');
+  loadSessions(false).catch((e) => showFatal(e.message));
+}
+
+function onSessionsSortClick(event) {
+  const th = event.target.closest('th[data-sort]');
+  if (!th) return;
+  const view = state.sessionsView;
+  const next = nextSort({ key: view.sort, dir: view.dir }, th.dataset.sort,
+    th.dataset.sortFirst || 'desc');
+  changeSessionsView('sort', { sort: next.key, dir: next.dir });
+}
+
+function renderSessionsControls(payload) {
+  const select = document.getElementById('session-project');
+  select.textContent = '';
+  sessionProjectOptions(payload.projects, state.sessionsView.project).forEach((entry) => {
+    const option = document.createElement('option');
+    option.value = entry.value;
+    option.textContent = entry.text;
+    select.appendChild(option);
+  });
+  select.value = state.sessionsView.project;
+  const { number, pages, total } = payload.page;
+  document.getElementById('sessions-pager-status').textContent =
+    t('ui.sessions.pager.status', { page: number, pages, total });
+  document.getElementById('sessions-prev').disabled = number <= 1;
+  document.getElementById('sessions-next').disabled = number >= pages;
+  applySortAria('sessions-table',
+    { key: state.sessionsView.sort, dir: state.sessionsView.dir });
 }
 
 function renderSessions() {
@@ -492,23 +931,23 @@ function renderSessions() {
 
   const body = document.querySelector('#sessions-table tbody');
   body.innerHTML = '';
-  payload.top.forEach((row) => {
+  renderSessionsControls(payload);
+  if (payload.page.total === 0) {
     const tr = document.createElement('tr');
-    const cells = [
-      [formatMoment(row.first), '', row.sessionId],
-      [formatDuration(row.durationMinutes), 'num', ''],
-      [row.projectLabel, '', row.project],
-      [row.modelsUsed.join(', '), '', ''],
-      [euroLessDollar(row.cost, 2), 'num', ''],
-      [num(row.tokens, 0), 'num', '']
-    ];
-    cells.forEach(([text, cls, title]) => {
-      const td = document.createElement('td');
-      if (cls) td.className = cls;
-      td.textContent = text;
-      if (title) td.title = title;
-      tr.appendChild(td);
-    });
+    const td = document.createElement('td');
+    td.colSpan = 6;
+    td.textContent = t('ui.sessions.empty');
+    tr.appendChild(td);
+    body.appendChild(tr);
+  }
+  payload.rows.forEach((row) => {
+    const tr = document.createElement('tr');
+    appendCell(tr, formatMoment(row.first)).title = row.sessionId;
+    appendCell(tr, formatDuration(row.durationMinutes), 'num');
+    appendCell(tr, row.projectLabel).title = row.project;
+    appendCell(tr, row.modelsUsed.join(', '));
+    appendCell(tr, euroLessDollar(row.cost, 2), 'num');
+    appendCell(tr, num(row.tokens, 0), 'num');
     body.appendChild(tr);
   });
 
@@ -664,14 +1103,15 @@ function renderRtk() {
 
   const body = document.querySelector('#rtk-month-table tbody');
   body.innerHTML = '';
-  payload.months.forEach((month) => {
+  applySortAria('rtk-month-table');
+  const sort = state.sort['rtk-month-table'];
+  sortRows(payload.months, sort.key, sort.dir, state.locale).forEach((month) => {
     const row = document.createElement('tr');
-    row.innerHTML = `
-      <td>${formatMonth(month.month)}</td>
-      <td class="num">${num(month.commands, 0)}</td>
-      <td class="num">${num(month.inputTokens, 0)}</td>
-      <td class="num">${num(month.savedTokens, 0)}</td>
-      <td class="num">${month.savingsRate === null ? '–' : pct(month.savingsRate * 100)}</td>`;
+    appendCell(row, formatMonth(month.month));
+    appendCell(row, num(month.commands, 0), 'num');
+    appendCell(row, num(month.inputTokens, 0), 'num');
+    appendCell(row, num(month.savedTokens, 0), 'num');
+    appendCell(row, month.savingsRate === null ? '–' : pct(month.savingsRate * 100), 'num');
     body.appendChild(row);
   });
 
@@ -769,8 +1209,8 @@ function applyStaticTexts() {
 
 const LANG_STORAGE_KEY = 'dashboard.lang';
 
-// localStorage rather than sessionStorage: the chosen tab deliberately
-// lasts one session, the language has to survive a fresh visit.
+// localStorage rather than sessionStorage: the language has to survive a
+// fresh visit, not only the current tab session.
 // Access can throw when the browser blocks storage for the page; the
 // dashboard must not stop there, so both sides fall through quietly.
 function storedLang() {
@@ -838,22 +1278,11 @@ function showFatal(message) {
   const box = document.getElementById('status');
   box.className = 'status error';
   document.getElementById('status-line').textContent = t('ui.error.prefix') + message;
-  document.getElementById('issue-list').hidden = true;
+  document.getElementById('status-details').hidden = true;
 }
 
-function renderStatus(data) {
-  const health = data.health;
-  const box = document.getElementById('status');
-  const line = document.getElementById('status-line');
-  const list = document.getElementById('issue-list');
-
-  // Stufe "info" benennt einen uebersprungenen Pruefschritt und ist kein
-  // Befund. Sie faerbt den Statusbereich weder rot noch gelb.
-  const errors = health.issues.filter((i) => i.level === 'error');
-  const warnings = health.issues.filter((i) => i.level === 'warn');
-  box.className = 'status ' + (errors.length ? 'error' : (warnings.length ? 'warn' : 'ok'));
-
-  line.textContent = t('ui.status.summary', {
+function summaryParams(health) {
+  return {
     accepted: health.filesAccepted,
     found: health.filesFound,
     days: health.daysLoaded,
@@ -863,7 +1292,58 @@ function renderStatus(data) {
     costFailed: health.costSumFailed,
     fileOk: health.fileChecks.filter((f) => f.ok).length,
     fileCount: health.fileChecks.length
-  });
+  };
+}
+
+// Pure so it can be tested without a DOM. Level "info" never colours the
+// status and never opens the details, but it is counted so that a skipped
+// check does not read as a passed one.
+function statusView(health) {
+  const hasError = health.issues.some((i) => i.level === 'error');
+  const hasWarn = health.issues.some((i) => i.level === 'warn');
+  const infoCount = health.issues.filter((i) => i.level === 'info').length;
+  if (hasError || hasWarn) {
+    return {
+      level: hasError ? 'error' : 'warn',
+      key: 'ui.status.summary',
+      params: summaryParams(health),
+      infoCount
+    };
+  }
+  const params = { accepted: health.filesAccepted, days: health.daysLoaded };
+  if (infoCount > 0) params.notes = infoCount;
+  return {
+    level: 'ok',
+    key: infoCount > 0 ? 'ui.status.ok_short_info' : 'ui.status.ok_short',
+    params,
+    infoCount
+  };
+}
+
+// The details are only reset when the level crosses between ok and
+// warn/error; a periodic redraw or a language switch must keep the user's choice.
+let statusNeedsAttention = null;
+
+function renderStatus(data) {
+  const health = data.health;
+  const box = document.getElementById('status');
+  const line = document.getElementById('status-line');
+  const details = document.getElementById('status-details');
+  const detailLine = document.getElementById('status-detail-line');
+  const list = document.getElementById('issue-list');
+
+  const view = statusView(health);
+  box.className = 'status ' + view.level;
+  line.textContent = t(view.key, view.params);
+
+  // The full summary is already the visible line for warn/error, so it is
+  // repeated inside the details only in the ok state.
+  const attention = view.level !== 'ok';
+  detailLine.textContent = attention ? '' : t('ui.status.summary', summaryParams(health));
+  detailLine.hidden = attention;
+  details.hidden = false;
+  if (attention !== statusNeedsAttention) details.open = attention;
+  statusNeedsAttention = attention;
 
   list.innerHTML = '';
   const shown = health.issues.slice(0, 60);
@@ -1011,7 +1491,15 @@ async function refreshHealth() {
 function renderFiles(data) {
   const body = document.querySelector('#file-table tbody');
   body.innerHTML = '';
-  data.files.forEach((file) => {
+  applySortAria('file-table');
+  const sort = state.sort['file-table'];
+  // Totals are nested and absent for some files; flatten them so the sort
+  // key addresses a plain field and a missing value sorts last.
+  const files = data.files.map((file) => Object.assign({}, file, {
+    totalTokens: file.hasTotals ? file.totals.totalTokens : null,
+    totalCost: file.hasTotals ? file.totals.totalCost : null
+  }));
+  sortRows(files, sort.key, sort.dir, state.locale).forEach((file) => {
     const row = document.createElement('tr');
 
     const nameTd = document.createElement('td');
@@ -1112,6 +1600,8 @@ function buildModelFilter(data) {
     input.addEventListener('change', () => {
       if (input.checked) state.selectedModels.add(model);
       else state.selectedModels.delete(model);
+      resetSessionsPage('models');
+      syncHash('push');
       refreshMetrics();
     });
     const swatch = document.createElement('span');
@@ -1125,6 +1615,8 @@ function buildModelFilter(data) {
 function setModels(filterFn) {
   state.selectedModels = new Set(state.data.models.filter(filterFn));
   buildModelFilter(state.data);
+  resetSessionsPage('models');
+  syncHash('push');
   refreshMetrics();
 }
 
@@ -1205,24 +1697,47 @@ function renderProjection(m) {
   box.appendChild(tail);
 }
 
+// Row builders for the table renderers: foreign text goes in via textContent only.
+function appendCell(row, text, className) {
+  const cell = document.createElement('td');
+  if (className) cell.className = className;
+  cell.textContent = text;
+  row.appendChild(cell);
+  return cell;
+}
+
+function swatchElement(model) {
+  const swatch = document.createElement('span');
+  swatch.className = 'swatch';
+  swatch.style.background = colorFor(model);
+  return swatch;
+}
+
 function renderModelTable(m) {
   const body = document.querySelector('#model-table tbody');
   body.innerHTML = '';
-  m.models.forEach((entry) => {
+  applySortAria('model-table');
+  const sort = state.sort['model-table'];
+  sortRows(m.models, sort.key, sort.dir, state.locale).forEach((entry) => {
     const row = document.createElement('tr');
-    row.innerHTML = `
-      <td><span class="swatch" style="background:${colorFor(entry.model)}"></span> ${entry.model}</td>
-      <td><span class="tag">${entry.agent}</span></td>
-      <td class="num">${euroLessDollar(entry.cost, 2)}</td>
-      <td class="num">${pct(entry.costShare)}</td>
-      <td class="num">${num(entry.totalTokens, 0)}</td>
-      <td class="num">${num(entry.outputTokens, 0)}</td>
-      <td class="num">${euroLessDollar(entry.costPerMillionOutputTokens, 2)}</td>
-      <td class="num">${euroLessDollar(entry.costPerMillionTokens, 3)}</td>
-      <td class="num">${num(entry.contextReloadFactor, 1)}</td>
-      <td class="num">${num(entry.days, 0)}</td>
-      <td>${formatDate(entry.firstDay)}</td>
-      <td>${formatDate(entry.lastDay)}</td>`;
+    const nameCell = appendCell(row, '');
+    nameCell.appendChild(swatchElement(entry.model));
+    nameCell.appendChild(document.createTextNode(' ' + entry.model));
+    const agentCell = appendCell(row, '');
+    const agentTag = document.createElement('span');
+    agentTag.className = 'tag';
+    agentTag.textContent = entry.agent;
+    agentCell.appendChild(agentTag);
+    appendCell(row, euroLessDollar(entry.cost, 2), 'num');
+    appendCell(row, pct(entry.costShare), 'num');
+    appendCell(row, num(entry.totalTokens, 0), 'num');
+    appendCell(row, num(entry.outputTokens, 0), 'num');
+    appendCell(row, euroLessDollar(entry.costPerMillionOutputTokens, 2), 'num');
+    appendCell(row, euroLessDollar(entry.costPerMillionTokens, 3), 'num');
+    appendCell(row, num(entry.contextReloadFactor, 1), 'num');
+    appendCell(row, num(entry.days, 0), 'num');
+    appendCell(row, formatDate(entry.firstDay));
+    appendCell(row, formatDate(entry.lastDay));
     body.appendChild(row);
   });
 }
@@ -1230,7 +1745,9 @@ function renderModelTable(m) {
 function renderMonthTable(m) {
   const body = document.querySelector('#month-table tbody');
   body.innerHTML = '';
-  m.months.forEach((month) => {
+  applySortAria('month-table');
+  const sort = state.sort['month-table'];
+  sortRows(m.months, sort.key, sort.dir, state.locale).forEach((month) => {
     const row = document.createElement('tr');
     row.innerHTML = `
       <td>${formatMonth(month.month)}</td>
@@ -1254,17 +1771,24 @@ function renderMonthTable(m) {
 function renderTopDays(m) {
   const body = document.querySelector('#topdays-table tbody');
   body.innerHTML = '';
-  m.topDays.forEach((day) => {
-    const breakdown = day.models.map((entry) =>
-      `<span class="tag"><span class="swatch" style="background:${colorFor(entry.model)}"></span> ${entry.model}: ${euroLessDollar(entry.cost, 2)} / ${num(entry.totalTokens, 0)} Tokens</span>`
-    ).join(' ');
+  applySortAria('topdays-table');
+  const sort = state.sort['topdays-table'];
+  sortRows(m.topDays, sort.key, sort.dir, state.locale).forEach((day) => {
     const row = document.createElement('tr');
-    row.innerHTML = `
-      <td>${formatDate(day.date)}</td>
-      <td class="num">${euroLessDollar(day.totalCost, 2)}</td>
-      <td class="num">${num(day.totalTokens, 0)}</td>
-      <td class="num">${euroLessDollar(day.costPerMillionTokens, 3)}</td>
-      <td class="breakdown">${breakdown}</td>`;
+    appendCell(row, formatDate(day.date));
+    appendCell(row, euroLessDollar(day.totalCost, 2), 'num');
+    appendCell(row, num(day.totalTokens, 0), 'num');
+    appendCell(row, euroLessDollar(day.costPerMillionTokens, 3), 'num');
+    const breakdown = appendCell(row, '', 'breakdown');
+    day.models.forEach((entry, index) => {
+      if (index > 0) breakdown.appendChild(document.createTextNode(' '));
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.appendChild(swatchElement(entry.model));
+      tag.appendChild(document.createTextNode(
+        ` ${entry.model}: ${euroLessDollar(entry.cost, 2)} / ${num(entry.totalTokens, 0)} Tokens`));
+      breakdown.appendChild(tag);
+    });
     body.appendChild(row);
   });
 }
@@ -1358,7 +1882,8 @@ function renderStacked(m) {
       plugins: Object.assign({}, base.plugins, {
         tooltip: {
           callbacks: {
-            label: (c) => c.parsed.y === null ? null : `${c.dataset.label}: ${measureValue(c.parsed.y)}`
+            label: (c) => c.parsed.y === null ? null : `${c.dataset.label}: ${measureValue(c.parsed.y)}`,
+            footer: stackFooter
           }
         }
       }),
@@ -1562,7 +2087,12 @@ function renderAgents(m) {
     },
     options: Object.assign({}, base, {
       plugins: Object.assign({}, base.plugins, {
-        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${measureValue(c.parsed.y)}` } }
+        tooltip: {
+          callbacks: {
+            label: (c) => c.parsed.y === null ? null : `${c.dataset.label}: ${measureValue(c.parsed.y)}`,
+            footer: stackFooter
+          }
+        }
       }),
       scales: Object.assign({}, base.scales, {
         x: Object.assign({}, base.scales.x, { stacked: true }),
@@ -1579,20 +2109,25 @@ function renderAgents(m) {
 document.getElementById('reload').addEventListener('click', () => loadAll(true));
 document.getElementById('period').addEventListener('change', (event) => {
   applyPeriod(event.target.value);
+  resetSessionsPage('period');
+  syncHash('push');
   refreshMetrics();
 });
 function refreshCustomRange() {
   const from = document.getElementById('date-from').value;
   const to = document.getElementById('date-to').value;
+  if (!from || !to || from > to) return;
   state.from = from;
   state.to = to;
-  if (!from || !to || from > to) return;
+  resetSessionsPage('period');
+  syncHash('replace');
   refreshMetrics();
 }
 document.getElementById('date-from').addEventListener('input', refreshCustomRange);
 document.getElementById('date-to').addEventListener('input', refreshCustomRange);
 document.getElementById('measure').addEventListener('change', (event) => {
   state.measure = event.target.value;
+  syncHash('push');
   if (state.metrics) renderCharts(state.metrics);
   redrawActiveTab();
 });
@@ -1606,6 +2141,26 @@ document.querySelectorAll('.tab').forEach((button) => {
   button.addEventListener('click', () => setTab(button.dataset.tab));
 });
 
+Object.keys(SORT_REDRAW).forEach((tableId) => {
+  document.querySelector(`#${tableId} thead`)
+    .addEventListener('click', (event) => onSortClick(tableId, event));
+});
+
+document.querySelector('#sessions-table thead')
+  .addEventListener('click', onSessionsSortClick);
+document.getElementById('session-project').addEventListener('change', (event) => {
+  changeSessionsView('project', { project: event.target.value });
+});
+document.getElementById('sessions-prev').addEventListener('click', () => {
+  changeSessionsView('page', { page: Math.max(1, state.sessionsView.page - 1) });
+});
+document.getElementById('sessions-next').addEventListener('click', () => {
+  changeSessionsView('page', { page: state.sessionsView.page + 1 });
+});
+
+window.addEventListener('popstate', onHashNavigation);
+window.addEventListener('hashchange', onHashNavigation);
+
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') refreshHealth();
 });
@@ -1617,6 +2172,11 @@ setInterval(() => {
 
 document.getElementById('export-state').addEventListener('click', () => {
   const box = document.getElementById('status');
+  const details = document.getElementById('status-details');
+  // showFatal hides the details on purpose; there is nothing to open then.
+  if (details.hidden) return;
+  // The status can be green and collapsed while the export state is not.
+  details.open = true;
   box.scrollIntoView({ block: 'start' });
   box.focus();
 });
@@ -1635,5 +2195,5 @@ document.documentElement.lang = state.lang;
 buildFormatters(state.locale);
 applyStaticTexts();
 buildLangSelect();
-applyTab(storedTab());
+applyTab(parseViewHash(location.hash).tab);
 loadAll(false);

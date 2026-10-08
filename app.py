@@ -40,6 +40,7 @@ MESSAGE_CODES = frozenset({
     "http.internal_error",
     "http.file_missing",
     "http.data_directory",
+    "http.param_invalid",
 })
 
 
@@ -301,13 +302,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
             models=self._models(query),
         ))
 
+    @staticmethod
+    def _parse_page(raw: str) -> int | None:
+        # int() raises ValueError on digit strings beyond the interpreter's
+        # int-str limit; that must be a 400, not a 500.
+        if not (raw.isascii() and raw.isdigit()):
+            return None
+        try:
+            value = int(raw)
+        except ValueError:
+            return None
+        return value if value >= 1 else None
+
     def _api_sessions(self, query: dict) -> None:
+        sort = query.get("sort", ["cost"])[0]
+        direction = query.get("dir", ["desc"])[0]
+        raw_page = query.get("page", ["1"])[0]
+        page = self._parse_page(raw_page)
+        invalid = None
+        if sort not in insights.SESSION_SORT_FIELDS:
+            invalid = ("sort", sort)
+        elif direction not in ("asc", "desc"):
+            invalid = ("dir", direction)
+        elif page is None:
+            invalid = ("page", raw_page)
+        if invalid:
+            self._send_error_json(400, "http.param_invalid",
+                                  {"name": invalid[0], "value": invalid[1]})
+            return
         _, extras, _ = self.store.get(force=self._flag(query, "reload"))
         self._send_json(insights.session_insights(
             extras["sessions"]["rows"],
             date_from=self._param(query, "from"),
             date_to=self._param(query, "to"),
             models=self._models(query),
+            project=query.get("project", [""])[0],
+            sort=sort, dir=direction, page=page,
         ))
 
     def _api_blocks(self, query: dict) -> None:

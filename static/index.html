@@ -40,7 +40,11 @@
 
 <section id="status" class="status" aria-live="polite" tabindex="-1">
   <div class="status-line" id="status-line" data-i18n="ui.status.loading">Daten werden geladen …</div>
-  <ul class="issue-list" id="issue-list" hidden></ul>
+  <details id="status-details">
+    <summary data-i18n="ui.status.details">Einzelheiten</summary>
+    <p class="status-detail-line" id="status-detail-line" hidden></p>
+    <ul class="issue-list" id="issue-list" hidden></ul>
+  </details>
 </section>
 
 <section class="controls" data-i18n-aria="ui.filter.aria" aria-label="Filter">
@@ -154,13 +158,13 @@
     <table id="model-table">
       <thead>
         <tr>
-          <th data-i18n="ui.overview.modeltable.model">Modell</th><th data-i18n="ui.overview.modeltable.agent">Agent</th><th class="num" data-i18n="ui.common.cost">Kosten</th>
-          <th class="num" data-i18n="ui.common.share">Anteil</th><th class="num" data-i18n="ui.common.tokens">Tokens</th>
-          <th class="num" data-i18n="ui.overview.modeltable.output">Output-Token</th>
-          <th class="num" data-i18n="ui.overview.modeltable.cpmout">$ / 1 Mio. Output-Token</th>
-          <th class="num" data-i18n="ui.common.cpm">$ / 1 Mio. Tokens</th>
-          <th class="num" data-i18n="ui.overview.modeltable.reload">Kontext-Reload</th>
-          <th class="num" data-i18n="ui.common.days">Tage</th><th data-i18n="ui.overview.modeltable.first">Erster Tag</th><th data-i18n="ui.overview.modeltable.last">Letzter Tag</th>
+          <th data-sort="model" data-sort-first="asc"><button type="button" class="sort"><span data-i18n="ui.overview.modeltable.model">Modell</span></button></th><th data-sort="agent" data-sort-first="asc"><button type="button" class="sort"><span data-i18n="ui.overview.modeltable.agent">Agent</span></button></th><th class="num" data-sort="cost"><button type="button" class="sort"><span data-i18n="ui.common.cost">Kosten</span></button></th>
+          <th class="num" data-sort="costShare"><button type="button" class="sort"><span data-i18n="ui.common.share">Anteil</span></button></th><th class="num" data-sort="totalTokens"><button type="button" class="sort"><span data-i18n="ui.common.tokens">Tokens</span></button></th>
+          <th class="num" data-sort="outputTokens"><button type="button" class="sort"><span data-i18n="ui.overview.modeltable.output">Output-Token</span></button></th>
+          <th class="num" data-sort="costPerMillionOutputTokens"><button type="button" class="sort"><span data-i18n="ui.overview.modeltable.cpmout">$ / 1 Mio. Output-Token</span></button></th>
+          <th class="num" data-sort="costPerMillionTokens"><button type="button" class="sort"><span data-i18n="ui.common.cpm">$ / 1 Mio. Tokens</span></button></th>
+          <th class="num" data-sort="contextReloadFactor"><button type="button" class="sort"><span data-i18n="ui.overview.modeltable.reload">Kontext-Reload</span></button></th>
+          <th class="num" data-sort="days"><button type="button" class="sort"><span data-i18n="ui.common.days">Tage</span></button></th><th data-sort="firstDay" data-sort-first="asc"><button type="button" class="sort"><span data-i18n="ui.overview.modeltable.first">Erster Tag</span></button></th><th data-sort="lastDay" data-sort-first="asc"><button type="button" class="sort"><span data-i18n="ui.overview.modeltable.last">Letzter Tag</span></button></th>
         </tr>
       </thead>
       <tbody></tbody>
@@ -173,9 +177,9 @@
   <div class="table-scroll">
     <table id="month-table">
       <thead>
-        <tr><th data-i18n="ui.common.month">Monat</th><th class="num" data-i18n="ui.common.days_with_data">Tage mit Daten</th>
-        <th class="num" data-i18n="ui.common.tokens">Tokens</th><th class="num" data-i18n="ui.common.cost">Kosten</th>
-        <th class="num" data-i18n="ui.common.cpm">$ / 1 Mio. Tokens</th></tr>
+        <tr><th data-sort="month" data-sort-first="asc"><button type="button" class="sort"><span data-i18n="ui.common.month">Monat</span></button></th><th class="num" data-sort="days"><button type="button" class="sort"><span data-i18n="ui.common.days_with_data">Tage mit Daten</span></button></th>
+        <th class="num" data-sort="totalTokens"><button type="button" class="sort"><span data-i18n="ui.common.tokens">Tokens</span></button></th><th class="num" data-sort="totalCost"><button type="button" class="sort"><span data-i18n="ui.common.cost">Kosten</span></button></th>
+        <th class="num" data-sort="costPerMillionTokens"><button type="button" class="sort"><span data-i18n="ui.common.cpm">$ / 1 Mio. Tokens</span></button></th></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -187,8 +191,8 @@
   <div class="table-scroll">
     <table id="topdays-table">
       <thead>
-        <tr><th data-i18n="ui.common.date">Datum</th><th class="num" data-i18n="ui.common.cost">Kosten</th><th class="num" data-i18n="ui.common.tokens">Tokens</th>
-        <th class="num" data-i18n="ui.common.cpm">$ / 1 Mio. Tokens</th><th data-i18n="ui.overview.topdays.breakdown">Aufschluesselung nach Modell</th></tr>
+        <tr><th data-sort="date" data-sort-first="asc"><button type="button" class="sort"><span data-i18n="ui.common.date">Datum</span></button></th><th class="num" data-sort="totalCost"><button type="button" class="sort"><span data-i18n="ui.common.cost">Kosten</span></button></th><th class="num" data-sort="totalTokens"><button type="button" class="sort"><span data-i18n="ui.common.tokens">Tokens</span></button></th>
+        <th class="num" data-sort="costPerMillionTokens"><button type="button" class="sort"><span data-i18n="ui.common.cpm">$ / 1 Mio. Tokens</span></button></th><th data-i18n="ui.overview.topdays.breakdown">Aufschluesselung nach Modell</th></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -200,8 +204,8 @@
   <div class="table-scroll">
     <table id="file-table">
       <thead>
-        <tr><th data-i18n="ui.files.file">Datei</th><th data-i18n="ui.files.status">Status</th><th data-i18n="ui.files.schema">Schema</th>
-        <th class="num" data-i18n="ui.common.days">Tage</th><th class="num" data-i18n="ui.common.tokens">Tokens</th><th class="num" data-i18n="ui.common.cost">Kosten</th></tr>
+        <tr><th data-sort="name" data-sort-first="asc"><button type="button" class="sort"><span data-i18n="ui.files.file">Datei</span></button></th><th data-sort="accepted" data-sort-first="asc"><button type="button" class="sort"><span data-i18n="ui.files.status">Status</span></button></th><th data-i18n="ui.files.schema">Schema</th>
+        <th class="num" data-sort="days"><button type="button" class="sort"><span data-i18n="ui.common.days">Tage</span></button></th><th class="num" data-sort="totalTokens"><button type="button" class="sort"><span data-i18n="ui.common.tokens">Tokens</span></button></th><th class="num" data-sort="totalCost"><button type="button" class="sort"><span data-i18n="ui.common.cost">Kosten</span></button></th></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -235,9 +239,9 @@
     <div class="table-scroll">
       <table id="projects-table">
         <thead>
-          <tr><th data-i18n="ui.projects.project">Projekt</th><th class="num" data-i18n="ui.common.cost">Kosten</th><th class="num" data-i18n="ui.common.share">Anteil</th>
-          <th class="num" data-i18n="ui.common.tokens">Tokens</th><th class="num" data-i18n="ui.common.days">Tage</th>
-          <th class="num" data-i18n="ui.common.cpm">$ / 1 Mio. Tokens</th></tr>
+          <tr><th data-sort="projectLabel" data-sort-first="asc"><button type="button" class="sort"><span data-i18n="ui.projects.project">Projekt</span></button></th><th class="num" data-sort="cost"><button type="button" class="sort"><span data-i18n="ui.common.cost">Kosten</span></button></th><th class="num" data-sort="share"><button type="button" class="sort"><span data-i18n="ui.common.share">Anteil</span></button></th>
+          <th class="num" data-sort="tokens"><button type="button" class="sort"><span data-i18n="ui.common.tokens">Tokens</span></button></th><th class="num" data-sort="days"><button type="button" class="sort"><span data-i18n="ui.common.days">Tage</span></button></th>
+          <th class="num" data-sort="costPerMillion"><button type="button" class="sort"><span data-i18n="ui.common.cpm">$ / 1 Mio. Tokens</span></button></th></tr>
         </thead>
         <tbody></tbody>
       </table>
@@ -259,21 +263,30 @@
   </section>
 
   <section class="card wide">
-    <h2 data-i18n="ui.sessions.table.head">Die 20 teuersten Sessions</h2>
+    <h2 data-i18n="ui.sessions.table.head">Sessions</h2>
     <p class="note"><span data-i18n="ui.sessions.table.note1">Quelle ist sessions/YYYY-Www.json aus dem
        weekly-Export. Die Spalte</span> <strong data-i18n="ui.sessions.duration">Dauer</strong>
        <span data-i18n="ui.sessions.table.note2">ist die Spanne zwischen erster und letzter Aktivitaet,</span>
        <strong data-i18n="ui.sessions.table.note3">nicht</strong><span data-i18n="ui.sessions.table.note4"> die aktive
        Arbeitszeit. Zeiten in Ortszeit; auch der Zeitraumfilter arbeitet nach
        Ortszeit, nicht nach dem UTC-Tag des Zeitstempels.</span></p>
+    <div class="sessions-filter">
+      <label for="session-project" data-i18n="ui.sessions.filter.label">Projekt</label>
+      <select id="session-project"></select>
+    </div>
     <div class="table-scroll">
       <table id="sessions-table">
         <thead>
-          <tr><th data-i18n="ui.sessions.start">Start</th><th class="num" data-i18n="ui.sessions.duration">Dauer</th><th data-i18n="ui.projects.project">Projekt</th>
-          <th data-i18n="ui.sessions.models">Modelle</th><th class="num" data-i18n="ui.common.cost">Kosten</th><th class="num" data-i18n="ui.common.tokens">Tokens</th></tr>
+          <tr><th data-sort="start"><button type="button" class="sort"><span data-i18n="ui.sessions.start">Start</span></button></th><th class="num" data-sort="duration"><button type="button" class="sort"><span data-i18n="ui.sessions.duration">Dauer</span></button></th><th data-sort="project" data-sort-first="asc"><button type="button" class="sort"><span data-i18n="ui.projects.project">Projekt</span></button></th>
+          <th data-i18n="ui.sessions.models">Modelle</th><th class="num" data-sort="cost"><button type="button" class="sort"><span data-i18n="ui.common.cost">Kosten</span></button></th><th class="num" data-sort="tokens"><button type="button" class="sort"><span data-i18n="ui.common.tokens">Tokens</span></button></th></tr>
         </thead>
         <tbody></tbody>
       </table>
+    </div>
+    <div class="sessions-pager">
+      <button type="button" id="sessions-prev" data-i18n="ui.sessions.pager.prev">Zurueck</button>
+      <span id="sessions-pager-status"></span>
+      <button type="button" id="sessions-next" data-i18n="ui.sessions.pager.next">Weiter</button>
     </div>
   </section>
 </div>
@@ -323,9 +336,9 @@
     <div class="table-scroll">
       <table id="rtk-month-table">
         <thead>
-          <tr><th data-i18n="ui.common.month">Monat</th><th class="num" data-i18n="ui.rtk.commands">Befehle</th>
-          <th class="num" data-i18n="ui.rtk.raw">Rohausgabe</th><th class="num" data-i18n="ui.rtk.saved">Gesparte Token</th>
-          <th class="num" data-i18n="ui.rtk.rate">Sparquote</th></tr>
+          <tr><th data-sort="month" data-sort-first="asc"><button type="button" class="sort"><span data-i18n="ui.common.month">Monat</span></button></th><th class="num" data-sort="commands"><button type="button" class="sort"><span data-i18n="ui.rtk.commands">Befehle</span></button></th>
+          <th class="num" data-sort="inputTokens"><button type="button" class="sort"><span data-i18n="ui.rtk.raw">Rohausgabe</span></button></th><th class="num" data-sort="savedTokens"><button type="button" class="sort"><span data-i18n="ui.rtk.saved">Gesparte Token</span></button></th>
+          <th class="num" data-sort="savingsRate"><button type="button" class="sort"><span data-i18n="ui.rtk.rate">Sparquote</span></button></th></tr>
         </thead>
         <tbody></tbody>
       </table>

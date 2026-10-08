@@ -90,7 +90,7 @@ whoever edits `config.toml` ever sees it). `HEAD` is mapped onto `GET`.
 | `GET /api/metrics` | all metrics of the overview | yes | yes | yes |
 | `GET /api/health` | the health block only | yes | — | — |
 | `GET /api/projects` | metrics per project | yes | yes | yes |
-| `GET /api/sessions` | metrics per session | yes | yes | yes |
+| `GET /api/sessions` | metrics per session, sorted and paged | yes | yes | yes |
 | `GET /api/blocks` | metrics of the 5-hour blocks | yes | yes | — |
 | `GET /api/rtk` | metrics of the rtk savings | yes | yes | — |
 
@@ -178,6 +178,35 @@ The individual metrics are covered in [chapter 5](05-metrics.md).
 `compute_metrics` calls them all and returns an object with `filter`,
 `summary`, `months`, `cumulativeByMonth`, `dailySeries`, `stackedByModel`,
 `models`, `pareto`, `timeline`, `topDays` and `projection`.
+
+`topDays` holds the ten most expensive days with data of the selection,
+descending by `totalCost`. The frontend sorts the table itself, so another
+column order only reorders these ten rows. Days without data are gaps and
+do not appear.
+
+**`/api/sessions` parameters.** On top of `from`, `to`, `models` and
+`reload`:
+
+| Parameter | Values | Default |
+|---|---|---|
+| `project` | exact `project` key, empty means all | empty |
+| `sort` | `start`, `duration`, `project`, `cost`, `tokens` | `cost` |
+| `dir` | `asc`, `desc` | `desc` |
+| `page` | positive integer | `1` |
+
+The page size is the constant `SESSION_PAGE_SIZE` in `insights.py`, not a
+parameter. The response carries `kpis` and `histogram` (computed after the
+project filter), `rows` (the sessions of the requested page), `projects`
+(`project`, `projectLabel`, `sessions`, built before the project filter so
+the selection list keeps all entries), `page` (`number`, `size`, `total`,
+`pages`), `sort` (`key`, `dir`) and `project` (the applied filter, `""` for
+all). A `page` beyond `pages` is clamped to the last page and the actual
+number is reported in `page.number`. An unknown `project` is no error: it is
+a valid filter without matches.
+
+An unknown `sort` or `dir`, or a `page` that is not a positive integer,
+returns HTTP 400 with the message code `http.param_invalid` and the params
+`name` and `value` (the raw text).
 
 ## `sources.py` — extra sources
 

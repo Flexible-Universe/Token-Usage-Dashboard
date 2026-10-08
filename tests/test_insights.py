@@ -212,7 +212,7 @@ class SessionInsightsTests(unittest.TestCase):
         self.assertAlmostEqual(k["totalCost"], 161.05)
 
     def test_top_liste_absteigend_und_begrenzt(self):
-        top = insights.session_insights(self.rows)["top"]
+        top = insights.session_insights(self.rows)["rows"]
         self.assertEqual([t["sessionId"] for t in top], ["s3", "s2", "s1"])
         self.assertEqual(top[0]["projectLabel"], "dash")
         self.assertEqual(top[0]["durationMinutes"], 540)
@@ -252,7 +252,85 @@ class SessionInsightsTests(unittest.TestCase):
         result = insights.session_insights([])
         self.assertEqual(result["kpis"]["sessionCount"], 0)
         self.assertIsNone(result["kpis"]["medianCost"])
-        self.assertEqual(result["top"], [])
+        self.assertEqual(result["rows"], [])
+
+    def _ids(self, **kw):
+        return [r["sessionId"]
+                for r in insights.session_insights(self.rows, **kw)["rows"]]
+
+    def test_projects_built_before_project_filter(self):
+        result = insights.session_insights(self.rows, project="-a-dash")
+        self.assertEqual(
+            result["projects"],
+            [{"project": "-a-dash", "projectLabel": "dash", "sessions": 1},
+             {"project": "-a-lumo", "projectLabel": "lumo", "sessions": 2}])
+        self.assertEqual(result["project"], "-a-dash")
+
+    def test_kpis_and_histogram_follow_project_filter(self):
+        result = insights.session_insights(self.rows, project="-a-lumo",
+                                           sort="start", page=1)
+        self.assertEqual(result["kpis"]["sessionCount"], 2)
+        self.assertEqual(result["kpis"]["maxSessionId"], "s2")
+        self.assertEqual(sum(result["histogram"]["counts"]), 2)
+
+    def test_every_sort_key_in_both_directions(self):
+        expected = {
+            "start": ["s1", "s2", "s3"], "duration": ["s1", "s2", "s3"],
+            "project": ["s3", "s1", "s2"], "cost": ["s1", "s2", "s3"],
+            "tokens": None,
+        }
+        for key in ("start", "duration", "project", "cost", "tokens"):
+            asc = self._ids(sort=key, dir="asc")
+            desc = self._ids(sort=key, dir="desc")
+            self.assertEqual(sorted(asc), ["s1", "s2", "s3"])
+            if expected[key]:
+                self.assertEqual(asc, expected[key], key)
+            if key in ("start", "duration", "cost"):
+                self.assertEqual(desc, ["s3", "s2", "s1"], key)
+
+    def test_none_duration_last_in_both_directions(self):
+        self.rows[1]["durationMinutes"] = None
+        for direction in ("asc", "desc"):
+            self.assertEqual(self._ids(sort="duration", dir=direction)[-1],
+                             "s2")
+
+    def test_tie_broken_by_session_id_ascending(self):
+        self.rows[0]["totalCost"] = 3.0
+        for direction in ("asc", "desc"):
+            ids = self._ids(sort="cost", dir=direction)
+            ids = [i for i in ids if i in ("s1", "s2")]
+            self.assertEqual(ids, ["s1", "s2"])
+
+    def test_text_sort_uses_casefold(self):
+        self.rows[0]["projectLabel"] = "Zeta"
+        self.rows[1]["projectLabel"] = "alpha"
+        self.assertEqual(self._ids(sort="project", dir="asc"),
+                         ["s2", "s3", "s1"])
+
+    def test_paging(self):
+        rows = [session("s%03d" % i, "2026-09-01T10:00:00Z",
+                        "2026-09-01T11:00:00Z", "lumo", 1.0 + i,
+                        [bd("claude-opus-5", 1.0 + i)], 60)
+                for i in range(120)]
+        result = insights.session_insights(rows, page=3)
+        self.assertEqual(result["page"],
+                         {"number": 3, "size": 50, "total": 120, "pages": 3})
+        self.assertEqual(len(result["rows"]), 20)
+        over = insights.session_insights(rows, page=9)
+        self.assertEqual(over["page"]["number"], 3)
+        self.assertEqual(result["sort"], {"key": "cost", "dir": "desc"})
+
+    def test_no_hits_gives_one_page(self):
+        result = insights.session_insights([])
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["page"],
+                         {"number": 1, "size": 50, "total": 0, "pages": 1})
+
+    def test_unknown_project_is_empty_and_not_listed(self):
+        result = insights.session_insights(self.rows, project="-a-nope")
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["page"]["total"], 0)
+        self.assertNotIn("-a-nope", [p["project"] for p in result["projects"]])
 
 
 

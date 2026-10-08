@@ -62,8 +62,10 @@ Six charts: cumulative monthly cost, daily values stacked by model, cost per
 model timeline, context reload factor. Plus "Claude gegen Codex je Tag"
 (Claude versus Codex per day).
 
-Three tables: cost share per model, monthly totals, the 10 most expensive
-days.
+Three tables: cost share per model, monthly totals, and the ten most
+expensive days with data (by default the most expensive first). Tables are sorted by clicking a column
+header: the first click sorts by that column, a second click reverses the
+direction. Sorting runs in the browser.
 
 ### Projekte (projects)
 
@@ -80,8 +82,16 @@ The project names are shortened labels, see
 ### Sessions
 
 Source `sessions/`. KPI cards: sessions, median per session, most expensive
-session, median duration. Plus the 20 most expensive sessions as a table and
-a histogram of the cost distribution.
+session, median duration. Plus a table of all sessions and a histogram of the
+cost distribution.
+
+The table is sorted on the server by clicking a column header (start,
+duration, project, cost, tokens; default cost, descending) and is paged,
+50 sessions per page, with Back and Next buttons and the text "Seite x von y".
+A project select above the table filters the whole tab, including the KPIs
+and the histogram; its first entry is "all projects". Changing project or
+sorting returns to page 1, as does changing period or models, while the
+project stays. If the selection has no sessions, the table shows an empty row.
 
 The histogram sits next to the median because the median alone hides the skew
 of the distribution: the classes are left-closed ("5 bis unter 20 $"), and
@@ -115,8 +125,22 @@ Switching tabs loads that tab's data and redraws it — even if it was loaded
 before, because Chart.js computes wrong sizes when drawing into a hidden
 container.
 
-**Active tab.** Remembered in `localStorage` under `dashboard.tab` and
-restored on the next visit.
+**View state in the URL.** Tab, period, measure and model selection live in
+the URL hash, for example `#tab=sessions&period=2026-09&measure=cost`. The
+keys are `tab`, `period` (`all`, a month `YYYY-MM` or `custom`), `from` and
+`to` (only with `custom`), `measure` and `models` (comma-separated; `models=`
+alone means none, a missing key means all). The Sessions tab adds `project`
+(the `project` key, URL-encoded), `sort` (`<key>-<dir>`, for example
+`duration-asc`) and `page` (positive integer); they are kept in the hash
+regardless of the active tab. Their defaults are the empty project, `cost-desc`
+and page 1. A malformed `sort` or `page` is caught while parsing the hash. A
+`project` that is not in the list returned by `/api/sessions`, or a `page`
+beyond the last, is corrected after the response and reported the same way. Defaults are left out, so the
+default view has no hash. Changing a control adds a history entry, so Back
+and Forward step through the views. A hash that is malformed or names an
+unknown month or model falls back to the default for that key, writes a
+`console.warn` and is rewritten without adding a history entry. The language
+is deliberately not part of the hash: it stays a per-browser setting.
 
 **Reload.** The button appends `reload=1` and forces the `DataStore` to read
 everything again. The time of the last load is shown in the header.
@@ -149,6 +173,19 @@ leaving charts and metrics alone. The backend evaluates the ages on every
 request, so a tab that stayed open overnight is current after switching
 back to it. In the message list, `check.export.gap_risk` appends the call
 that closes the gap.
+
+**Status area.** One short line shows the result of the plausibility check,
+for example "All checks passed (5 files, 40 days with data)". The full check
+summary and the message list sit in a collapsible `Details` section. It opens
+by itself only for `warn` and `error`; a periodic refresh or a language switch
+keeps the reader's choice. Level `info` never colours the line and never opens
+the details, but its messages are counted in the short line ("3 note(s), see
+details"), so a skipped check does not read as a passed one.
+
+**Stack totals.** The tooltip of a stacked chart ends with a `Total` line. It
+is the sum of the datasets shown in that tooltip, so models hidden through the
+filter or the legend are not part of it. It is not the day total of the source
+file. On days without data the line is absent.
 
 **Coverage note.** If the chosen period reaches beyond what a source covers,
 a sentence naming the period actually present appears instead of an empty

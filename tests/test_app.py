@@ -351,9 +351,39 @@ class ExtraSourceApiTests(unittest.TestCase):
     def test_api_sessions(self):
         payload = get(self.base + "/api/sessions")
         self.assertEqual(payload["kpis"]["sessionCount"], 1)
-        self.assertEqual(payload["top"][0]["sessionId"], "s1")
+        self.assertEqual(payload["rows"][0]["sessionId"], "s1")
         self.assertEqual(len(payload["histogram"]["counts"]), 6)
         self.assertEqual(len(payload["histogram"]["bounds"]), 5)
+
+    def test_api_sessions_params_passed_through(self):
+        payload = get(self.base + "/api/sessions?project=-home-du-projekte-alpha"
+                      "&sort=start&dir=asc&page=1")
+        self.assertEqual(payload["sort"], {"key": "start", "dir": "asc"})
+        self.assertEqual(payload["project"], "-home-du-projekte-alpha")
+        self.assertEqual(payload["page"]["total"], 1)
+        other = get(self.base + "/api/sessions?project=-nope")
+        self.assertEqual(other["rows"], [])
+
+    def test_api_sessions_invalid_params(self):
+        for query, name, value in (
+            ("sort=bogus", "sort", "bogus"), ("dir=up", "dir", "up"),
+            ("page=0", "page", "0"), ("page=-1", "page", "-1"),
+            ("page=abc", "page", "abc"),
+        ):
+            with self.assertRaises(HTTPError) as ctx:
+                urlopen(self.base + "/api/sessions?" + query, timeout=5)
+            self.assertEqual(ctx.exception.code, 400, query)
+            body = json.loads(ctx.exception.read().decode("utf-8"))
+            self.assertEqual(body["code"], "http.param_invalid")
+            self.assertEqual(body["params"], {"name": name, "value": value})
+
+    def test_api_sessions_overlong_page_is_rejected(self):
+        value = "9" * 5000
+        with self.assertRaises(HTTPError) as ctx:
+            urlopen(self.base + "/api/sessions?page=" + value, timeout=5)
+        self.assertEqual(ctx.exception.code, 400)
+        body = json.loads(ctx.exception.read().decode("utf-8"))
+        self.assertEqual(body["code"], "http.param_invalid")
 
     def test_api_blocks(self):
         payload = get(self.base + "/api/blocks")

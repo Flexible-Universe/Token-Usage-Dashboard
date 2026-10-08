@@ -20,7 +20,8 @@ the platform-specific check skipped.
 | `tests/test_sources.py` | the four extra sources and `check_extras` |
 | `tests/test_insights.py` | metrics of the extra sources, coverage |
 | `tests/test_app.py` | routing, API, static files, start |
-| `tests/test_frontend.py` | browser filter flow through dependency-free Node tests |
+| `tests/test_frontend.py` | runs every `tests/*.test.js` with `node --test` (filter flow, URL hash, status line, chart tooltips) |
+| `tests/frontend-harness.js` | shared scaffold for the Node tests: loads `static/app.js` into a `vm` context with fake DOM elements |
 | `tests/test_i18n.py` | catalogue parity and message code completeness |
 | `tests/helpers.py` | test data and temporary directories |
 

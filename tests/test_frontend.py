@@ -1,5 +1,6 @@
 """Runs the dependency-free JavaScript regression tests."""
 
+import glob
 import shutil
 import subprocess
 import unittest
@@ -12,12 +13,14 @@ NODE = shutil.which("node")
 
 @unittest.skipUnless(NODE, "Node.js is not installed")
 class FrontendTests(unittest.TestCase):
-    def test_filter_flow(self):
+    def test_node_suites(self):
+        test_files = sorted(glob.glob(str(BASE_DIR / "tests" / "*.test.js")))
+        self.assertTrue(test_files, "No test files found matching tests/*.test.js")
         result = subprocess.run(
-            [NODE, "--test", str(BASE_DIR / "tests" / "frontend-filter.test.js")],
+            [NODE, "--test"] + test_files,
             cwd=BASE_DIR,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
