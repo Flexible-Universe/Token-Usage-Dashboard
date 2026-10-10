@@ -296,22 +296,52 @@ test('export failure texts come from the catalogue without a special case', () =
     /ui\.export\.no_targets/);
 });
 
-test('gapRiskCommand: path with spaces follows the spec form', () => {
+test('gapRiskCommand: POSIX path with spaces, interpreter from the backend', () => {
   const context = loadFrontend().context;
   context.dir = '/Users/x/Library/Application Support/Claude-Code-Usage';
+  context.runtime = { python: '/opt/homebrew/bin/python3', windows: false };
   assert.equal(
-    vm.runInContext('gapRiskCommand(dir, 33)', context),
-    'CCUSAGE_DATA_DIR="/Users/x/Library/Application Support/Claude-Code-Usage" ' +
-    'CCUSAGE_LOOKBACK_DAYS=33 ' +
-    '"/Users/x/Library/Application Support/Claude-Code-Usage/bin/ccusage-export.sh" weekly');
+    vm.runInContext('gapRiskCommand(dir, 33, runtime)', context),
+    "'/opt/homebrew/bin/python3' " +
+    "'/Users/x/Library/Application Support/Claude-Code-Usage/bin/ccusage-export.py' " +
+    "weekly --data-dir '/Users/x/Library/Application Support/Claude-Code-Usage' " +
+    '--lookback-days 33');
 });
 
-test('gapRiskCommand: dollar, backtick, quote and backslash are escaped', () => {
+test('gapRiskCommand: POSIX single quote is closed, escaped and reopened', () => {
   const context = loadFrontend().context;
-  context.dir = '/a$b`c"d\\e';
-  const escaped = '/a\\$b\\`c\\"d\\\\e';
+  context.dir = "/a$b`c\"d\\e'f";
+  context.runtime = { python: 'python3', windows: false };
+  const quoted = "'/a$b`c\"d\\e'\\''f";
   assert.equal(
-    vm.runInContext('gapRiskCommand(dir, 5)', context),
-    'CCUSAGE_DATA_DIR="' + escaped + '" CCUSAGE_LOOKBACK_DAYS=5 "' +
-    escaped + '/bin/ccusage-export.sh" weekly');
+    vm.runInContext('gapRiskCommand(dir, 5, runtime)', context),
+    "'python3' " + quoted + "/bin/ccusage-export.py' weekly --data-dir " + quoted +
+    "' --lookback-days 5");
+});
+
+test('gapRiskCommand: Windows uses PowerShell call syntax and backslashes', () => {
+  const context = loadFrontend().context;
+  context.dir = "C:\\Users\\O'Neil\\AppData\\Local\\Claude-Code-Usage";
+  context.runtime = { python: 'C:\\Program Files\\Python313\\python.exe', windows: true };
+  assert.equal(
+    vm.runInContext('gapRiskCommand(dir, 20, runtime)', context),
+    "& 'C:\\Program Files\\Python313\\python.exe' " +
+    "'C:\\Users\\O''Neil\\AppData\\Local\\Claude-Code-Usage\\bin\\ccusage-export.py' " +
+    "weekly --data-dir 'C:\\Users\\O''Neil\\AppData\\Local\\Claude-Code-Usage' " +
+    '--lookback-days 20');
+});
+
+test('gapRiskCommand: PowerShell typographic single quotes are doubled', () => {
+  const context = loadFrontend().context;
+  context.dir = 'C:\\D\u2019x';
+  context.runtime = { python: 'py', windows: true };
+  assert.match(vm.runInContext('gapRiskCommand(dir, 1, runtime)', context),
+    /--data-dir 'C:\\D\u2019\u2019x'/);
+});
+
+test('gapRiskCommand: without runtime falls back to python3 on POSIX', () => {
+  const context = loadFrontend().context;
+  context.dir = '/d';
+  assert.equal(vm.runInContext('gapRiskCommand(dir, 3)', context),
+    "'python3' '/d/bin/ccusage-export.py' weekly --data-dir '/d' --lookback-days 3");
 });

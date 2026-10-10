@@ -86,7 +86,7 @@ whoever edits `config.toml` ever sees it). `HEAD` is mapped onto `GET`.
 
 | Endpoint | Contents | `reload` | `from`/`to` | `models` |
 |---|---|---|---|---|
-| `GET /api/data` | raw data, file list, models, months, period, health | yes | — | — |
+| `GET /api/data` | raw data, file list, models, months, period, health, runtime | yes | — | — |
 | `GET /api/metrics` | all metrics of the overview | yes | yes | yes |
 | `GET /api/health` | the health block only | yes | — | — |
 | `GET /api/projects` | metrics per project | yes | yes | yes |
@@ -101,6 +101,11 @@ source knows nothing about models. Both report this in the field
 
 `models` accepts multiple occurrences and comma-separated lists
 (`?models=a,b&models=c`) and is collapsed into a sorted, duplicate-free list.
+
+`runtime` in `/api/data` is `{"python": <interpreter of the running server>,
+"windows": <true on Windows>}`. The frontend needs it for one thing only: the
+call that closes a weekly export gap names the interpreter and is written for
+the host's shell, POSIX or PowerShell (see [chapter 6](06-checks.md)).
 
 ## `loader.py` — configuration and monthly files
 
@@ -117,6 +122,14 @@ host = "127.0.0.1"
 port = 8000
 open_browser = true
 ```
+
+The default `directory` depends on the platform: the path above on macOS,
+`~/.local/share/claude-code-usage` on Linux (or below `$XDG_DATA_HOME` when
+set), and the absolute `%LOCALAPPDATA%\Claude-Code-Usage` on Windows,
+because `%LOCALAPPDATA%` is not expanded when reading
+(`loader.default_data_directory`). A `config.toml` written by `app.py` or
+`install.py` stores the path as an escaped TOML string, so the backslashes of
+a Windows path survive.
 
 Missing keys fall back to the defaults **individually**, not the whole
 section. An unusable port, or a section that is not a table, produces a

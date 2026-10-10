@@ -369,7 +369,7 @@ class ThresholdTests(unittest.TestCase):
         self.assertEqual(codes(issues), [("check.export.overdue", "weekly")])
 
     def test_weekly_gap_risk_starts_at_local_midnight(self):
-        # ccusage-export.sh exports from the local date "today - lookback",
+        # ccusage-export.py exports from the local date "today - lookback",
         # so a run on 2026-10-04 still covers a success on 2026-09-20.
         success = datetime(2026, 9, 20, 4, 31, tzinfo=BERLIN_SUMMER)
         for job in ("daily", "monthly"):

@@ -911,7 +911,7 @@ def _evaluate_job(job: str, entry: dict, now: _datetime) -> tuple[list, dict]:
                 found.add("warn", "check.export.overdue", "overdue", overdue)
         elif job == "weekly":
             lookback = ok["lookbackDays"]
-            # ccusage-export.sh exports from the local date "today minus
+            # ccusage-export.py exports from the local date "today minus
             # lookbackDays", so the gap opens at local midnight, not after
             # lookbackDays times 24 hours.
             local_days = (now.astimezone().date()
@@ -927,7 +927,7 @@ def _evaluate_job(job: str, entry: dict, now: _datetime) -> tuple[list, dict]:
             elif days > 8:
                 found.add("warn", "check.export.overdue", "overdue", overdue)
         else:
-            # launchd starts the monthly job in local time, so the month
+            # Every scheduler starts the monthly job in local time, so the month
             # boundary is the server's local one, not UTC.
             local_now = now.astimezone()
             first_of_month = local_now.date().replace(day=1)

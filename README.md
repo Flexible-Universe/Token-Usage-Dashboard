@@ -1,11 +1,11 @@
-# Token Usage Dashboard (only for macOS)
+# Token Usage Dashboard (Windows, Linux and macOS)
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 A local dashboard for Claude Code and Codex usage data: tokens, cost,
 projects, sessions and billing blocks, read from a directory of exported
-JSON files. Python 3.11+, standard library only, no build step, nothing to
-install.
+JSON files. Python 3.11+, standard library only, no build step, no
+packages to install. Runs on Windows, Linux and macOS.
 
 **The user interface supports German and English.** The documentation is in
 English. The browser language selects the initial UI language; a selection in
@@ -14,7 +14,45 @@ while costs stay in US dollars.
 
 ![Dashboard](docs/screenshots/dashboard.png)
 
-## Quick start
+## System requirements
+
+| Component | Required | Minimum |
+|---|---|---|
+| Python | yes | 3.11 |
+| Web browser | yes | Chrome/Edge 111, Firefox 113, Safari 16.2 |
+| Claude Code and/or Codex | for live data | — |
+| Node.js with `npm` | for live data | 22 |
+| `ccusage` (`npm install -g ccusage`) | for live data | 20.0.16 |
+| `rtk` | no, only for the RTK tab | 0.7.1 |
+| Scheduler (launchd, systemd or cron, Task Scheduler) | no, only for nightly exports | — |
+
+The dashboard alone runs wherever Python 3.11 runs. The export chain needs
+Windows 10 or 11, macOS 14 or Linux with glibc 2.28, each on x64 or ARM64.
+No administrator rights are needed. Without `ccusage` and `rtk` the installer
+offers demo mode. Reasons for each minimum, and what is missing without an
+optional component, in
+[`docs/07-installation.md`](docs/07-installation.md#system-requirements).
+
+## Install from a release
+
+Each release ships one ZIP per system:
+`token-usage-dashboard-<version>-windows.zip`, `-linux.zip` and `-macos.zip`.
+
+1. Unpack the ZIP for your system.
+2. macOS and Linux: run `./install.sh` in the unpacked folder. Windows:
+   double-click `install.cmd`, or run it in a terminal.
+3. Start the dashboard with the start script the installer names at the end
+   (`start-dashboard.sh` or `start-dashboard.cmd` in the application
+   directory).
+
+The installer copies the application to a per-user directory, creates the
+data directory, sets up the four nightly export jobs with the system's
+scheduler (launchd, systemd or cron, Windows Task Scheduler) and writes
+`config.toml`. `--remove-jobs` removes the jobs again; the data directory is
+never deleted. Details in
+[`docs/07-installation.md`](docs/07-installation.md).
+
+## Quick start from the repository
 
 ```bash
 git clone https://github.com/Flexible-Universe/Token-Usage-Dashboard.git token-usage-dashboard
@@ -23,8 +61,8 @@ python3 tools/make-sample-data.py --out sample-data
 python3 app.py
 ```
 
-The first start writes a `config.toml` next to `app.py`, modelled on
-`config.example.toml`. To make the dashboard show the sample data you just
+The first start writes a `config.toml` next to `app.py` that points at the
+usual data directory of the running system. To make the dashboard show the sample data you just
 generated, set `directory = "sample-data"` there and start `app.py` again.
 Relative paths are resolved relative to `config.toml`, and `~` is expanded.
 
@@ -37,21 +75,27 @@ sources, idle blocks.
 The dashboard does not produce data. It needs a directory holding at least
 one file matching `YYYY-MM.json`. That directory is filled by the export
 chain in [`export/`](export/README.md), which queries `ccusage` and `rtk` and
-validates their output before replacing any file. It runs on macOS only.
+validates their output before replacing any file. It is written in Python and
+runs on macOS, Linux and Windows.
 
-`install.sh` does the setup:
+`install.py` does the setup; `install.sh` (macOS, Linux) and `install.cmd`
+(Windows) only find a suitable Python and pass every argument on:
 
 ```bash
 ./install.sh                     # data directory, export scripts, config.toml
-./install.sh --with-launchagents # plus the four nightly launchd runs
+./install.sh --with-jobs         # plus the four nightly export jobs
 ./install.sh --dry-run           # shows what would happen, changes nothing
+./install.sh --remove-jobs       # removes the jobs, keeps the data
 ```
 
+The jobs use launchd on macOS, systemd user timers (or cron as a fallback) on
+Linux and the Task Scheduler on Windows; `--scheduler` chooses explicitly.
+
 The repository is the source of the export scripts, the data directory is
-where they run: `install.sh` places them under `<data>/bin`, and the launchd
-jobs call those copies. A work in progress therefore cannot drag the nightly
-export down with it. If a copy later differs from the repository, the script
-reports it and leaves it alone; `--force` brings it up to date.
+where they run: the installer places them under `<data>/bin`, and the jobs
+call those copies. A work in progress therefore cannot drag the nightly
+export down with it. If a copy later differs from the repository, the
+installer reports it and leaves it alone; `--force` brings it up to date.
 
 The full setup — including the manual route — is in
 [`docs/07-installation.md`](docs/07-installation.md).
@@ -68,9 +112,12 @@ port = 8000
 open_browser = true
 ```
 
-Missing keys fall back to the defaults individually. If the data directory
-does not exist, or holds no file matching `YYYY-MM.json`, the start aborts
-with an error message naming the path that was checked.
+That is the macOS default. On Linux the data directory defaults to
+`~/.local/share/claude-code-usage`, on Windows to
+`%LOCALAPPDATA%\Claude-Code-Usage`. Missing keys fall back to the defaults
+individually. If the data directory does not exist, or holds no file
+matching `YYYY-MM.json`, the start aborts with an error message naming the
+path that was checked.
 
 ## Security
 
@@ -102,15 +149,16 @@ Chart.js 4.4.1 is bundled under `static/vendor/` under the MIT license.
 
 | File | Purpose |
 |---|---|
-| `install.sh` | Sets up data directory, export scripts and launchd runs |
+| `install.py` | Sets up data directory, export scripts, `config.toml` and the scheduled jobs |
+| `install.sh`, `install.cmd` | Starters for macOS/Linux and Windows: find Python 3.11+, call `install.py` |
 | `app.py` | Entry point, HTTP server, routing |
 | `loader.py` | Reading, normalizing, plausibility checks |
 | `metrics.py` | Metrics |
 | `sources.py` | Reads the extra sources from `projects/`, `blocks/`, `sessions/`, `rtk/` |
 | `insights.py` | Metrics for the extra sources |
 | `static/` | User interface, plus Chart.js under `static/vendor/` |
-| `export/` | Export chain for the data directory, launchd templates under `export/launchd/` |
-| `tools/` | `make-sample-data.py` generates sample data to try things out |
+| `export/` | Export chain for the data directory, in Python |
+| `tools/` | `make-sample-data.py` generates sample data |
 | `docs/` | Full documentation, start at [`docs/README.md`](docs/README.md) |
 | `tests/` | Tests using `unittest` |
 
@@ -127,9 +175,11 @@ nothing about models.
 python3 -m unittest discover -s tests -t .
 ```
 
-Expected: `OK`, currently 229 tests with five skips. Four real-data test
-classes are skipped as long as `TOKEN_DASHBOARD_REAL_DATA` does not point at
-a real data directory; one installation check is platform-specific.
+Expected on macOS: `OK`, currently 462 tests with five skips: the four
+real-data test classes are skipped as long as `TOKEN_DASHBOARD_REAL_DATA`
+does not point at a real data directory, and the test of the Windows starter
+skips on any other system. On Linux and Windows a few
+platform-specific installer tests skip in addition.
 
 ## Contributing
 

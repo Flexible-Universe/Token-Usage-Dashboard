@@ -131,3 +131,31 @@ def write_week(directory: Path, subdir: str, week: str, key: str, items: list,
     path = sub / f"{week}.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+def make_stub(directory: Path, name: str, code: str) -> Path:
+    """Writes an executable stand-in for an external program.
+
+    ``code`` is Python. On POSIX the stub is the script itself with a
+    shebang on the running interpreter; on Windows a ``.cmd`` wrapper calls
+    it, the way npm installs ``ccusage.cmd``. Returns the path to execute.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        script = directory / f"{name}-stub.py"
+        script.write_text(code, encoding="utf-8")
+        wrapper = directory / f"{name}.cmd"
+        wrapper.write_text(f'@"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+        return wrapper
+    stub = directory / name
+    stub.write_text(f"#!{sys.executable}\n{code}", encoding="utf-8")
+    stub.chmod(0o755)
+    return stub
+
+
+def minimal_path() -> str:
+    """A PATH without user tool directories, as a scheduler would start with."""
+    if os.name == "nt":
+        root = os.environ.get("SystemRoot", r"C:\Windows")
+        return os.pathsep.join([str(Path(root) / "System32"), root])
+    return "/usr/bin:/bin"

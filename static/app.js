@@ -1354,7 +1354,8 @@ function renderStatus(data) {
     item.textContent = '[' + level + '] ' + issue.key + ': ' + issueText(issue);
     if (issue.code === 'check.export.gap_risk') {
       const command = document.createElement('code');
-      command.textContent = gapRiskCommand(data.directory, issue.params.suggestedLookback);
+      command.textContent = gapRiskCommand(data.directory, issue.params.suggestedLookback,
+        data.runtime);
       item.appendChild(command);
     }
     list.appendChild(item);
@@ -1370,12 +1371,21 @@ function renderStatus(data) {
 
 const EXPORT_RANK = { error: 3, warn: 2, ok: 1, unknown: 0 };
 // Pure so it can be tested without a DOM. The export script does not derive the
-// data directory from its own location, so the variable must be in the command.
-function gapRiskCommand(directory, lookbackDays) {
-  // Inside double quotes the shell still interprets $, backtick, " and \.
-  const dir = directory.replace(/[$`"\\]/g, '\\$&');
-  return 'CCUSAGE_DATA_DIR="' + dir + '" CCUSAGE_LOOKBACK_DAYS=' + lookbackDays +
-    ' "' + dir + '/bin/ccusage-export.sh" weekly';
+// data directory from its own location, so the directory must be in the command.
+// runtime comes from /api/data: the interpreter the dashboard runs on and
+// whether the host is Windows, where the command is written for PowerShell.
+function gapRiskCommand(directory, lookbackDays, runtime) {
+  const windows = Boolean(runtime && runtime.windows);
+  const python = (runtime && runtime.python) || (windows ? 'py' : 'python3');
+  const script = directory + (windows ? '\\bin\\' : '/bin/') + 'ccusage-export.py';
+  // Single quotes keep both shells from interpreting anything inside;
+  // only the quote itself needs care. PowerShell also takes the typographic
+  // single quotes as quotes, so they are doubled too.
+  const quote = windows
+    ? (value) => "'" + value.replace(/['\u2018\u2019\u201A\u201B]/g, "$&$&") + "'"
+    : (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+  return (windows ? '& ' : '') + quote(python) + ' ' + quote(script) +
+    ' weekly --data-dir ' + quote(directory) + ' --lookback-days ' + lookbackDays;
 }
 
 // Most severe finding first; a lower index wins the header.

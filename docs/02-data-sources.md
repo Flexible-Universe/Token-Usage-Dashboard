@@ -10,22 +10,28 @@ Two tools deliver the raw data, both outside this repository:
   filters command output and records how many tokens therefore never reached
   a model. `rtk gain --all --format json` prints that statistic.
 
-Two shell scripts call these tools and write the results as JSON files into
-the data directory. Four launchd jobs start the scripts. The dashboard only
-ever sees the result.
+Two Python scripts call these tools and write the results as JSON files into
+the data directory. Four scheduled jobs start the scripts: launchd agents on
+macOS, systemd user timers (or cron) on Linux, Task Scheduler tasks on
+Windows. The dashboard only ever sees the result.
 
 ## The data directory
 
-Default path:
+Default path, per platform (`loader.default_data_directory` and
+`exportlib.default_data_dir`, which `tests/test_platform_paths.py` keeps in
+step):
 
-```
-~/Library/Application Support/Claude-Code-Usage/
-```
+| Platform | Path |
+|---|---|
+| macOS | `~/Library/Application Support/Claude-Code-Usage/` |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/claude-code-usage/` |
+| Windows | `%LOCALAPPDATA%\Claude-Code-Usage\` |
 
-The path deliberately does **not** live under `~/Documents`. TCC privacy
-protection applies there on macOS: a background process started by launchd
+On macOS the path deliberately does **not** live under `~/Documents`. TCC
+privacy protection applies there: a background process started by launchd
 gets no access, and the export runs fail silently. `Application Support` is
-free of that restriction.
+free of that restriction. The same caution applies to folders a sync client
+manages, such as Dropbox or OneDrive.
 
 ```
 Claude-Code-Usage/
@@ -152,8 +158,8 @@ This source reaches further back than `projects/`, `blocks/` and
 ### 6. `status/<job>.last.json` and `status/<job>.ok.json`
 
 Not usage data but the track record of the export chain. Every export script
-leaves one status file per run, from an `EXIT` trap that stands before
-anything that can fail, so even an abort before the binary is found is
+leaves one status file per run, from a `finally` block that encloses
+the whole run from the binary search on, so even an abort before the binary is found is
 recorded. The helper `bin/export-status.py` writes them, atomically.
 
 | File | Written | Purpose |
@@ -163,8 +169,8 @@ recorded. The helper `bin/export-status.py` writes them, atomically.
 
 The job is `daily`, `weekly`, `monthly` or `rtk`. Two files instead of one,
 because a failed run would otherwise have to read the old file to carry the
-last success forward: JSON handling in Bash, and a bug there would delete
-exactly the information the file exists for.
+last success forward, and a bug there would delete exactly the information
+the file exists for.
 
 ```json
 { "schema": 1, "job": "weekly",
@@ -205,7 +211,7 @@ names the exact call (see [chapter 6](06-checks.md)).
 
 ### The scripts
 
-`bin/ccusage-export.sh` with three modes:
+`bin/ccusage-export.py` with three modes:
 
 | Call | What happens | When |
 |---|---|---|
@@ -213,7 +219,7 @@ names the exact call (see [chapter 6](06-checks.md)).
 | `weekly` | archive `blocks/` and `sessions/` from a rolling 14-day window | Sundays at 04:30 |
 | `monthly` | freeze the completed previous month | on the 1st at 05:00 |
 
-`bin/rtk-export.sh` has no modes, and runs daily at 04:15. One run is enough:
+`bin/rtk-export.py` has no modes, and runs daily at 04:15. One run is enough:
 there is no rolling window and nothing that would need archiving.
 
 ### Why the weekly run is mandatory
@@ -226,7 +232,7 @@ by contrast, can be regenerated at any time.
 ### Three safety mechanisms
 
 **Write atomically.** The export goes into a temporary file. Only after it
-passes the check does an `mv` replace the target. An aborted run cannot
+passes the check does an atomic rename (`os.replace`) replace the target. An aborted run cannot
 damage a good file.
 
 **Catch regressions.** `bin/ccusage-check.py` compares the fresh export with
@@ -253,31 +259,43 @@ the dashboard's plausibility check reports a discrepancy.
 `CCUSAGE_LOOKBACK_DAYS` (default 14) sets how far back the weekly run
 reaches. If one run fails, the next one catches up.
 
-### Environment variables
+### Options and environment variables
 
-| Variable | Script | Purpose |
-|---|---|---|
-| `CCUSAGE_DATA_DIR` | `ccusage-export.sh` | data directory |
-| `RTK_DATA_DIR` | `rtk-export.sh` | data directory |
-| `CCUSAGE_BIN` | `ccusage-export.sh` | path to the `ccusage` binary |
-| `RTK_BIN` | `rtk-export.sh` | path to the `rtk` binary |
-| `CCUSAGE_LOOKBACK_DAYS` | `ccusage-export.sh` | lookback of the weekly run, default 14 |
-| `CCUSAGE_ALLOW_SHRINK` | `ccusage-export.sh` | allow a regression |
+| Option | Variable | Script | Purpose |
+|---|---|---|---|
+| `--data-dir` | `CCUSAGE_DATA_DIR` | `ccusage-export.py` | data directory |
+| `--data-dir` | `RTK_DATA_DIR` | `rtk-export.py` | data directory |
+| `--ccusage-bin` | `CCUSAGE_BIN` | `ccusage-export.py` | path to the `ccusage` binary |
+| `--rtk-bin` | `RTK_BIN` | `rtk-export.py` | path to the `rtk` binary |
+| `--lookback-days` | `CCUSAGE_LOOKBACK_DAYS` | `ccusage-export.py` | lookback of the weekly run, default 14 |
+| — | `CCUSAGE_SEARCH_DIRS` | `ccusage-export.py`, `install.py` | directories searched for `ccusage` before `PATH` |
+| — | `RTK_SEARCH_DIRS` | `rtk-export.py`, `install.py` | directories searched for `rtk` before `PATH` |
+| — | `CCUSAGE_ALLOW_SHRINK` | `ccusage-export.py` | allow a regression |
+
+An option beats its variable. The options exist because `cmd.exe`,
+PowerShell and the Windows Task Scheduler cannot put a variable in front of a
+command. The `*_SEARCH_DIRS` lists are separated by `os.pathsep`: a colon on
+macOS and Linux, a semicolon on Windows. The default search directories per
+platform are listed in [`export/README.md`](../export/README.md).
 
 Two pitfalls that both scripts handle explicitly:
 
-- launchd starts with `PATH=/usr/bin:/bin:/usr/sbin:/sbin`. A `ccusage`
-  installed via nvm is invisible there. Both scripts search the known
-  locations for the binary and extend `PATH` by its directory, because
-  `ccusage` carries the shebang `#!/usr/bin/env node`.
+- Every scheduler starts with its own sparse `PATH`; launchd for example with
+  `PATH=/usr/bin:/bin:/usr/sbin:/sbin`. A `ccusage` installed via nvm is
+  invisible there. Both scripts search the known locations for the binary,
+  and `ccusage-export.py` extends `PATH` by its directory, because `ccusage`
+  needs the `node` that lies next to it. `install.py` additionally pins the
+  paths it found into every job.
 - The name `rtk` collides with `reachingforthejack/rtk` (Rust Type Kit).
-  `rtk-export.sh` therefore first checks whether any JSON comes back at all.
+  `rtk-export.py` therefore first checks whether any JSON comes back at all.
   Without that check, the mix-up would only surface in the dashboard as an
   empty tab.
 
 ### Logs
 
 One file per mode under `logs/`: `daily.log`, `weekly.log`, `monthly.log`,
-`rtk.log`, each truncated to 2000 lines. Plus `launchd-*.out` and
-`launchd-*.err`. A line `ABBRUCH` ("aborted") always means: the target file
+`rtk.log`, each truncated to 2000 lines. Plus the scheduler's own output:
+`launchd-*.out` and `launchd-*.err` on macOS, `systemd-*.out` and
+`systemd-*.err` with systemd, `cron-*.out` with cron. The Windows tasks run
+under `pythonw.exe` without a console and write nothing besides the run log. A line `ABBRUCH` ("aborted") always means: the target file
 was left unchanged.

@@ -176,12 +176,13 @@ request on a copy of the health, never inside the cached result (see
 | `weekly` | Sundays at 04:30 | 8 days | the local date is more than `lookbackDays` (from `weekly.ok.json`) days after the local date of the last success |
 | `monthly` | on the 1st at 05:00 | on the 2nd of a month or later, when the last success lies before the 1st of the current month | — |
 
-The monthly rule uses the local calendar of the machine, because launchd
-starts the job in local time. The `weekly` rule is two-staged: from 8 days up
+The monthly rule uses the local calendar of the machine, because every
+scheduler (launchd, systemd, cron, Task Scheduler) starts the job in local
+time. The `weekly` rule is two-staged: from 8 days up
 to `lookbackDays` the next regular run still bridges the gap, so there is only
 the `check.export.overdue` warning; beyond it the next run no longer reaches
 the missing stretch and `check.export.gap_risk` replaces the warning. The
-error threshold counts local calendar dates, not hours: `ccusage-export.sh`
+error threshold counts local calendar dates, not hours: `ccusage-export.py`
 exports from the local date "today minus `lookbackDays`", so a success on
 date S is still covered by any run up to date S + `lookbackDays`, and the
 error appears from local midnight of S + `lookbackDays` + 1. The other
@@ -190,8 +191,24 @@ warning compare elapsed time, and the monthly rule uses the local calendar
 as described above. The parameter `ageDays` stays the elapsed time in
 days; `suggestedLookback` is that age rounded up, plus 1, which always
 reaches back to the date of the last success;
-the status area shows the call
-`CCUSAGE_DATA_DIR="<data>" CCUSAGE_LOOKBACK_DAYS=<n> "<data>/bin/ccusage-export.sh" weekly`.
+the status area shows the call that closes the gap. It is written for the
+shell of the machine the dashboard runs on, which `/api/data` reports in
+`runtime` (`python`, the interpreter of the running server, and `windows`):
+
+```
+'<python>' '<data>/bin/ccusage-export.py' weekly --data-dir '<data>' --lookback-days <n>
+```
+
+on macOS and Linux, and for PowerShell on Windows:
+
+```
+& '<python>' '<data>\bin\ccusage-export.py' weekly --data-dir '<data>' --lookback-days <n>
+```
+
+All paths are in single quotes, so neither shell interprets anything inside
+them; a quote in a path is escaped for the respective shell
+(`gapRiskCommand` in `static/app.js`). The options instead of environment
+variables make the same call work in PowerShell.
 
 Further findings, independent of the age:
 
@@ -219,7 +236,7 @@ Further findings, independent of the age:
   for the job.
 - `check.export.status_missing` (`info`) when `status/` does not exist at all.
   One message replaces the per-job ones, and every job has state `unknown`.
-  `install.sh --demo` deliberately does not create `status/`, so the demo
+  `install.py --demo` deliberately does not create `status/`, so the demo
   shows exactly this message ("Export: kein Status"): demo data have no
   exports to monitor.
 - The `rtk` job is only evaluated when `rtk/` exists.
@@ -258,7 +275,7 @@ run), `agents`, `kreuzpruefung` (cross-check), `rtk`, `export`.
 | `check.export.success_unrecorded` | the run succeeded (exit code 0), but `<job>.ok.json` is missing, damaged or older than `<job>.last.json` | look at `logs/<job>.log`; repeat the run |
 | `check.export.future_timestamp` | the clock ran ahead, or the status file was edited | check the system clock; repeat the run |
 | `check.export.never_logged` | the job has not run since `status/` exists | wait for the next run or trigger it by hand |
-| `check.export.status_missing` | installation predates the status files, or demo mode | existing installations: `./install.sh --force`, see [chapter 7](07-installation.md) |
+| `check.export.status_missing` | installation predates the status files, or demo mode | existing installations: `./install.sh --force` (`install.cmd --force` on Windows), see [chapter 7](07-installation.md) |
 | `source.status.bad_file.<rule>` | status file damaged or hand-edited | repeat the run; it rewrites the file |
 
 Every run can be triggered by hand, see [chapter 7](07-installation.md).
@@ -280,9 +297,15 @@ TOKEN_DASHBOARD_REAL_DATA="$HOME/Library/Application Support/Claude-Code-Usage" 
   python3 -m unittest discover -s tests -t .
 ```
 
-`tests/test_install.py` checks `install.sh` through `--dry-run` only — a real
-run would create directories and interfere with launchd. Two tests in it are
-platform-bound and skip each other: the dry run with `--with-launchagents`
-only runs on macOS, the check of the abort outside macOS only elsewhere. On a
-single machine one of the two is therefore always skipped; only macOS and CI
-together cover both cases.
+`tests/test_install.py` checks `install.py`. A real scheduler change cannot
+be made in a test run without consequences, so the tests that start
+`install.py` as a subprocess stay away from jobs or use `--dry-run`, always
+against a temporary home directory and data directory. The scheduler tests
+run in-process and replace `install.run_command`, the single gate to
+`launchctl`, `systemctl`, `crontab` and `schtasks`; they check the plist,
+unit files, crontab block and task XML that would be loaded. A few tests are
+platform-bound, because the installer refuses a scheduler the platform does
+not have: the launchd tests and the dry run with jobs run on macOS only, the
+check of the POSIX starter `install.sh` everywhere except Windows. The task
+XML for Windows is rendered and checked on every platform. On macOS nothing
+in this file is skipped.

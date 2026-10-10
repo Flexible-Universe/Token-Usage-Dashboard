@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import sys
 import threading
 import webbrowser
@@ -31,6 +32,10 @@ import sources
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.toml"
 STATIC_DIR = BASE_DIR / "static"
+
+# On Windows mimetypes reads the registry, where .js is sometimes text/plain.
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
 
 # Every message key this module can emit. A new message needs an entry here
 # and in every catalogue under static/i18n/, otherwise the dashboard shows
@@ -258,6 +263,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     zip(("from", "to"), metrics.date_range(dataset["days"]))
                 ),
                 "health": health,
+                # The remedy command for a weekly gap names the interpreter
+                # and is written for the host's shell.
+                "runtime": {"python": sys.executable, "windows": os.name == "nt"},
             }
         )
 

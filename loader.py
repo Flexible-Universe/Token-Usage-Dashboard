@@ -14,7 +14,9 @@ Unterstuetzt beide Schema-Varianten der Monatsdateien (``date`` bzw.
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 import tomllib
 from datetime import date as _date
 from pathlib import Path
@@ -42,9 +44,34 @@ TOKEN_FIELDS = (
     "cacheReadTokens",
 )
 
+def default_data_directory() -> str:
+    """Platform default of ``[data].directory`` as written into config.toml.
+
+    Must match export/exportlib.default_data_dir(); the export scripts run
+    from <data>/bin and cannot import this module. On Windows the value is
+    absolute, because ``%LOCALAPPDATA%`` is not expanded when reading.
+    """
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return str(Path(base) / "Claude-Code-Usage")
+    if sys.platform == "darwin":
+        return "~/Library/Application Support/Claude-Code-Usage"
+    xdg = os.environ.get("XDG_DATA_HOME")
+    return str(Path(xdg) / "claude-code-usage") if xdg else "~/.local/share/claude-code-usage"
+
+
+def toml_string(value: str) -> str:
+    """A TOML basic string; JSON escaping is a valid subset of it.
+
+    A Windows path written as a plain quoted string would turn its
+    backslashes into escape sequences.
+    """
+    return json.dumps(value, ensure_ascii=False)
+
+
 DEFAULT_CONFIG = {
     "data": {
-        "directory": "~/Library/Application Support/Claude-Code-Usage",
+        "directory": default_data_directory(),
     },
     "server": {
         "host": "127.0.0.1",
@@ -53,8 +80,8 @@ DEFAULT_CONFIG = {
     },
 }
 
-DEFAULT_CONFIG_TEXT = """[data]
-directory = "~/Library/Application Support/Claude-Code-Usage"
+DEFAULT_CONFIG_TEXT = f"""[data]
+directory = {toml_string(DEFAULT_CONFIG["data"]["directory"])}
 
 [server]
 host = "127.0.0.1"

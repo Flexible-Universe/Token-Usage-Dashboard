@@ -1,6 +1,8 @@
 """Tests fuer HTTP-Server, API-Endpunkte und Start ohne gueltiges Verzeichnis."""
 
 import json
+import os
+import sys
 import tempfile
 import threading
 import unittest
@@ -88,6 +90,8 @@ class ServerCase(unittest.TestCase):
         )
         self.assertEqual(payload["range"], {"from": "2026-05-01", "to": "2026-06-01"})
         self.assertIn("health", payload)
+        self.assertEqual(payload["runtime"], {"python": sys.executable,
+                                              "windows": os.name == "nt"})
 
     def test_api_health(self):
         payload = get(self.base + "/api/health")

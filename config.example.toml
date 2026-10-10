@@ -1,5 +1,13 @@
-# Vorlage. Beim ersten Start legt app.py eine config.toml mit diesen Werten an.
+# Vorlage. Beim ersten Start legt app.py eine config.toml an; install.py
+# traegt dabei das gewaehlte Datenverzeichnis ein.
 # Relative Pfade werden relativ zu dieser Datei aufgeloest, ~ wird expandiert.
+#
+# Uebliche Datenverzeichnisse:
+#   macOS    ~/Library/Application Support/Claude-Code-Usage
+#   Linux    ~/.local/share/claude-code-usage
+#   Windows  C:\Users\<Name>\AppData\Local\Claude-Code-Usage
+#            (in TOML mit doppelten Backslashes oder in einfachen
+#            Anfuehrungszeichen: 'C:\Users\...')
 
 [data]
 directory = "~/Library/Application Support/Claude-Code-Usage"
