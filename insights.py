@@ -20,6 +20,8 @@ import loader
 import metrics
 
 TOP_PROJECTS = 8
+# Worktrees listed individually under a repository row; the rest is summed.
+TOP_WORKTREES = 10
 # Sentinel for the rest bucket. Not a string: every string could be a real
 # project label, and the bucket would then silently swallow that project.
 _OTHER = object()
@@ -129,24 +131,31 @@ def _cost_per_million(cost: float, tokens: float) -> float | None:
 def project_insights(rows: list[dict], date_from: str | None = None,
                      date_to: str | None = None,
                      models: list[str] | None = None) -> dict:
-    """KPIs, gestapelte Tagesreihe und Tabelle je Projekt."""
+    """KPIs, gestapelte Tagesreihe und Tabelle je Repository."""
     cov = coverage([r["date"] for r in rows], date_from, date_to)
     selected = filter_rows(rows, date_from, date_to, models)
 
-    per_project: dict[str, dict] = {}
+    per_repo: dict[str, dict] = {}
     for row in selected:
-        entry = per_project.setdefault(row["projectLabel"], {
+        entry = per_repo.setdefault(row["repo"], {
+            "project": row["repo"], "projectLabel": row["repoLabel"],
+            "cost": 0.0, "tokens": 0, "dates": set(), "children": {},
+        })
+        child = entry["children"].setdefault(row["project"], {
             "project": row["project"], "projectLabel": row["projectLabel"],
+            "worktreeLabel": row["worktreeLabel"],
+            "isMain": row["worktreeLabel"] is None,
             "cost": 0.0, "tokens": 0, "dates": set(),
         })
-        entry["cost"] += row["totalCost"]
-        entry["tokens"] += row["totalTokens"]
-        entry["dates"].add(row["date"])
+        for target in (entry, child):
+            target["cost"] += row["totalCost"]
+            target["tokens"] += row["totalTokens"]
+            target["dates"].add(row["date"])
 
-    total_cost = sum(e["cost"] for e in per_project.values())
-    table = []
-    for entry in sorted(per_project.values(), key=lambda e: -e["cost"]):
-        table.append({
+    total_cost = sum(e["cost"] for e in per_repo.values())
+
+    def finish(entry: dict) -> dict:
+        return {
             "project": entry["project"],
             "projectLabel": entry["projectLabel"],
             "cost": entry["cost"],
@@ -154,7 +163,33 @@ def project_insights(rows: list[dict], date_from: str | None = None,
             "tokens": entry["tokens"],
             "days": len(entry["dates"]),
             "costPerMillion": _cost_per_million(entry["cost"], entry["tokens"]),
-        })
+        }
+
+    table = []
+    for entry in sorted(per_repo.values(), key=lambda e: -e["cost"]):
+        line = finish(entry)
+        worktrees = sorted(
+            (c for c in entry["children"].values() if not c["isMain"]),
+            key=lambda c: (-c["cost"], c["project"]))
+        if worktrees:
+            children = [dict(finish(c), worktreeLabel=c["worktreeLabel"],
+                             isMain=True)
+                        for c in entry["children"].values() if c["isMain"]]
+            children += [dict(finish(c), worktreeLabel=c["worktreeLabel"],
+                              isMain=False)
+                         for c in worktrees[:TOP_WORKTREES]]
+            hidden = worktrees[TOP_WORKTREES:]
+            if hidden:
+                hidden_cost = sum(c["cost"] for c in hidden)
+                children.append({
+                    "isRest": True, "count": len(hidden),
+                    "cost": hidden_cost,
+                    "tokens": sum(c["tokens"] for c in hidden),
+                    "share": hidden_cost / total_cost if total_cost else 0.0,
+                    "days": None, "costPerMillion": None,
+                })
+            line["children"] = children
+        table.append(line)
 
     labels = _calendar_axis(r["date"] for r in selected)
     top = [t["projectLabel"] for t in table[:TOP_PROJECTS]]
@@ -163,7 +198,7 @@ def project_insights(rows: list[dict], date_from: str | None = None,
     if rest:
         buckets[_OTHER] = {"cost": {}, "tokens": {}}
     for row in selected:
-        name = row["projectLabel"] if row["projectLabel"] in buckets else _OTHER
+        name = row["repoLabel"] if row["repoLabel"] in buckets else _OTHER
         bucket = buckets[name]
         bucket["cost"][row["date"]] = bucket["cost"].get(row["date"], 0.0) + row["totalCost"]
         bucket["tokens"][row["date"]] = bucket["tokens"].get(row["date"], 0) + row["totalTokens"]
@@ -185,7 +220,7 @@ def project_insights(rows: list[dict], date_from: str | None = None,
         "topProjectCost": top_entry["cost"] if top_entry else 0.0,
         "topProjectShare": top_entry["share"] if top_entry else 0.0,
         "totalCost": total_cost,
-        "totalTokens": sum(e["tokens"] for e in per_project.values()),
+        "totalTokens": sum(e["tokens"] for e in per_repo.values()),
         "days": len({r["date"] for r in selected}),
     }
     return {"kpis": kpis, "stacked": {"labels": labels, "datasets": datasets},

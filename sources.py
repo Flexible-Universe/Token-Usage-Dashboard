@@ -155,6 +155,26 @@ def _iso_date(value) -> str | None:
     return candidate
 
 
+# Order matters: the separator "-" is indistinguishable from the path
+# separator, so "<repo>--claude-worktrees-x" also contains "-worktrees-" and
+# would split into the bogus repo "<repo>-" if the short marker came first.
+# A marker only counts when its prefix is a key that really exists; this
+# cross-check keeps repos with "-worktrees-" in their own name whole.
+WORKTREE_MARKERS = ("--claude-worktrees-", "--worktrees-", "-worktrees-")
+
+
+def worktree_parent(key: str, known_keys) -> tuple[str, str | None]:
+    """Return ``(repo_key, worktree_label)``; ``(key, None)`` for non-worktrees."""
+    for marker in WORKTREE_MARKERS:
+        index = key.find(marker)
+        if index <= 0:
+            continue
+        prefix = key[:index]
+        if prefix in known_keys:
+            return prefix, key[index + len(marker):]
+    return key, None
+
+
 def load_projects(directory: Path) -> dict:
     """Liest projects/YYYY-MM.json und liefert flache Tageszeilen je Projekt."""
     rows: list[dict] = []
@@ -213,6 +233,14 @@ def load_projects(directory: Path) -> dict:
     labels = assign_labels(sorted({r["project"] for r in rows}))
     for row in rows:
         row["projectLabel"] = labels.get(row["project"], row["project"])
+    # Checked against every key read, never the filtered period, so the
+    # grouping does not change with the date filter.
+    known = {r["project"] for r in rows}
+    for row in rows:
+        row["repo"], row["worktreeLabel"] = worktree_parent(row["project"], known)
+    repo_labels = assign_labels(sorted({r["repo"] for r in rows}))
+    for row in rows:
+        row["repoLabel"] = repo_labels.get(row["repo"], row["repo"])
     rows.sort(key=lambda r: (r["date"], r["projectLabel"]))
     return {"rows": rows, "files": file_infos, "errors": errors}
 

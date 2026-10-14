@@ -52,6 +52,8 @@ const state = {
   loading: false,
   tab: 'overview',
   projects: null,
+  // Repo keys whose worktree rows are shown; survives redraws, filters and reloads.
+  projectsExpanded: new Set(),
   sessions: null,
   // Server-side view of the sessions table; sorting and paging happen in
   // the backend, so the state is sent with every request.
@@ -680,6 +682,21 @@ async function loadProjects(reload) {
   renderProjects();
 }
 
+// Pure: flat row list for the projects table. Sorting applies to repo rows
+// only; the children keep the backend order and travel with their repo.
+function projectTableRows(table, sort, expanded, locale) {
+  const out = [];
+  sortRows(table, sort.key, sort.dir, locale).forEach((row) => {
+    out.push({ level: 0, kind: 'repo', row });
+    if (!row.children || !expanded.has(row.project)) return;
+    row.children.forEach((child) => {
+      const kind = child.isMain ? 'main' : child.isRest ? 'rest' : 'worktree';
+      out.push({ level: 1, kind, row: child });
+    });
+  });
+  return out;
+}
+
 function renderProjects() {
   const payload = state.projects;
   if (!payload) return;
@@ -701,10 +718,32 @@ function renderProjects() {
   body.innerHTML = '';
   applySortAria('projects-table');
   const sort = state.sort['projects-table'];
-  sortRows(payload.table, sort.key, sort.dir, state.locale).forEach((row) => {
+  projectTableRows(payload.table, sort, state.projectsExpanded, state.locale).forEach((entry) => {
+    const { row, kind } = entry;
     const tr = document.createElement('tr');
+    if (entry.level) tr.className = 'subrow';
     const name = document.createElement('td');
-    name.textContent = row.projectLabel;
+    if (kind === 'repo' && row.children) {
+      const open = state.projectsExpanded.has(row.project);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'expand-toggle';
+      button.setAttribute('aria-expanded', String(open));
+      button.setAttribute('aria-label', t(open ? 'ui.projects.collapse' : 'ui.projects.expand'));
+      button.textContent = open ? '\u25BE' : '\u25B8';
+      button.addEventListener('click', () => {
+        if (open) state.projectsExpanded.delete(row.project);
+        else state.projectsExpanded.add(row.project);
+        renderProjects();
+      });
+      name.appendChild(button);
+      name.appendChild(document.createTextNode(' '));
+    }
+    const label = document.createElement('span');
+    label.textContent = kind === 'main' ? t('ui.projects.main')
+      : kind === 'rest' ? t('ui.projects.rest', { count: row.count })
+      : kind === 'worktree' ? row.worktreeLabel : row.projectLabel;
+    name.appendChild(label);
     name.title = row.project;
     tr.appendChild(name);
     [euroLessDollar(row.cost, 2), pct(row.share * 100), num(row.tokens, 0),

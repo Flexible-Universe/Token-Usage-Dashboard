@@ -197,6 +197,21 @@ descending by `totalCost`. The frontend sorts the table itself, so another
 column order only reorders these ten rows. Days without data are gaps and
 do not appear.
 
+**`/api/projects` grouping.** `table` has one row per repository: `cost` and
+`tokens` are sums, `days` is the union of the date sets, `costPerMillion` is
+the quotient of the sums, `share` relates to the total cost of the period.
+A row carries `children` only if at least one worktree contributes. The
+children come in a fixed order: the main checkout (`isMain: true`) if it has
+data in the period, up to ten worktrees by descending cost (ties by raw key),
+and a rest row (`isRest: true` with `count`, `cost`, `tokens`, `share`; `days`
+and `costPerMillion` are `null`) only if more than ten worktrees contribute.
+Worktree rows carry the same fields as a repository row plus `worktreeLabel`;
+their cost and tokens add up exactly to the repository row. `kpis.projectCount`,
+`kpis.topProject` and `stacked.datasets` count repositories. The raw rows from
+`load_projects` keep `project` and `projectLabel` unchanged and gain `repo`
+(raw key of the repository), `repoLabel` and `worktreeLabel` (the part after
+the marker, `null` for the main checkout).
+
 **`/api/sessions` parameters.** On top of `from`, `to`, `models` and
 `reload`:
 

@@ -98,6 +98,46 @@ class FindFilesTests(unittest.TestCase):
             )
 
 
+class WorktreeParentTests(unittest.TestCase):
+    REPO = "-home-du-projekte-alpha"
+
+    def test_pattern_a_claude_worktrees(self):
+        key = self.REPO + "--claude-worktrees-feature-x"
+        self.assertEqual(sources.worktree_parent(key, {self.REPO, key}),
+                         (self.REPO, "feature-x"))
+
+    def test_pattern_b_double_dash_worktrees(self):
+        key = self.REPO + "--worktrees-feature-x"
+        self.assertEqual(sources.worktree_parent(key, {self.REPO, key}),
+                         (self.REPO, "feature-x"))
+
+    def test_pattern_c_single_dash_worktrees(self):
+        key = self.REPO + "-worktrees-feature-x"
+        self.assertEqual(sources.worktree_parent(key, {self.REPO, key}),
+                         (self.REPO, "feature-x"))
+
+    def test_unknown_prefix_keeps_key_whole(self):
+        for suffix in ("--claude-worktrees-x", "--worktrees-x", "-worktrees-x"):
+            key = self.REPO + suffix
+            self.assertEqual(sources.worktree_parent(key, {key}), (key, None))
+
+    def test_repo_name_containing_marker_stays_whole(self):
+        key = "-x-my-worktrees-tool"
+        self.assertEqual(sources.worktree_parent(key, {key}), (key, None))
+
+    def test_plain_key_is_not_a_worktree(self):
+        self.assertEqual(sources.worktree_parent(self.REPO, {self.REPO}),
+                         (self.REPO, None))
+
+    def test_marker_order_prevents_trailing_dash_repo(self):
+        # Only "<repo>-" is known besides the real repo: the longer marker
+        # must win, otherwise the key would split at "-worktrees-".
+        key = self.REPO + "--claude-worktrees-x"
+        known = {self.REPO, self.REPO + "-", key}
+        self.assertEqual(sources.worktree_parent(key, known),
+                         (self.REPO, "x"))
+
+
 class LoadProjectsTests(unittest.TestCase):
     def _fixture(self, tmp):
         write_projects(Path(tmp), "2026-09", {
@@ -126,6 +166,40 @@ class LoadProjectsTests(unittest.TestCase):
             self.assertEqual(first["month"], "2026-09")
             self.assertEqual(first["sourceFile"], "2026-09.json")
             self.assertEqual(first["sumTokens"], first["totalTokens"])
+
+    def test_worktree_assignment_across_month_files(self):
+        repo = "-home-du-projekte-alpha"
+        wt = repo + "--claude-worktrees-feat"
+        with TemporaryDirectory() as tmp:
+            write_projects(Path(tmp), "2026-08", {
+                repo: [project_day("2026-08-30", repo,
+                                   [breakdown("claude-opus-5", 1, 1, 1, 1, 1.0)])],
+            })
+            write_projects(Path(tmp), "2026-09", {
+                wt: [project_day("2026-09-01", wt,
+                                 [breakdown("claude-opus-5", 1, 1, 1, 1, 1.0)])],
+            })
+            rows = sources.load_projects(Path(tmp))["rows"]
+            by_project = {r["project"]: r for r in rows}
+            self.assertEqual(by_project[repo]["repo"], repo)
+            self.assertIsNone(by_project[repo]["worktreeLabel"])
+            self.assertEqual(by_project[wt]["repo"], repo)
+            self.assertEqual(by_project[wt]["worktreeLabel"], "feat")
+            self.assertEqual(by_project[repo]["repoLabel"],
+                             by_project[wt]["repoLabel"])
+            self.assertEqual(by_project[wt]["projectLabel"],
+                             sources.assign_labels([repo, wt])[wt])
+
+    def test_worktree_without_known_repo_stays_own_repo(self):
+        wt = "-home-du-projekte-alpha--worktrees-feat"
+        with TemporaryDirectory() as tmp:
+            write_projects(Path(tmp), "2026-09", {
+                wt: [project_day("2026-09-01", wt,
+                                 [breakdown("claude-opus-5", 1, 1, 1, 1, 1.0)])],
+            })
+            row = sources.load_projects(Path(tmp))["rows"][0]
+            self.assertEqual(row["repo"], wt)
+            self.assertIsNone(row["worktreeLabel"])
 
     def test_zeilen_sind_nach_datum_sortiert(self):
         with TemporaryDirectory() as tmp:

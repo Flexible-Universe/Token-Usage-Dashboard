@@ -128,6 +128,11 @@ sentinel that cannot occur in the data.
 The project names are shortened labels. The full key sits next to them in the
 field `project`.
 
+Worktrees are grouped under their repository: the top 8, the project count
+and the top project count repositories, not individual agent runs. A
+repository shows up to ten worktrees individually; the rest is one summed
+row. Details in [chapter 3](03-backend.md).
+
 ## Sessions (`insights.session_insights`)
 
 Count, median and maximum of the costs, median duration, and the sessions

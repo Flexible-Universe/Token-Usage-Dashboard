@@ -103,6 +103,17 @@ afterwards indistinguishable from the path separator. The way back is
 therefore not guessed: `sources.assign_labels` merely strips the common
 prefix of all keys and so yields a short label.
 
+Worktrees of a repository appear as keys of their own. Three patterns occur:
+`<repo>--claude-worktrees-<name>` (from `<repo>/.claude/worktrees/<name>`),
+`<repo>-worktrees-<name>` (from `<repo>-worktrees/<name>` or
+`<repo>/worktrees/<name>`) and `<repo>--worktrees-<name>` (from
+`<repo>/.worktrees/<name>`). The pattern alone does not reveal the repository,
+because a hyphen or `-worktrees` may belong to the directory name. A key is
+therefore assigned to a repository only when the prefix before the marker is
+itself a key in the data (`sources.worktree_parent`); the check runs over all
+keys of all project files, not over the filtered period. Otherwise the key
+stays its own repository.
+
 ### 3. `blocks/YYYY-Www.json`
 
 Produced with `ccusage blocks --json`. The 5-hour billing windows:

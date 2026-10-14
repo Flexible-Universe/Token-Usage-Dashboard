@@ -15,11 +15,15 @@ import loader
 import sources
 
 
-def row(date, project, label, cost, breakdowns):
+def row(date, project, label, cost, breakdowns, repo=None, repo_label=None,
+        worktree=None):
     fields = ("inputTokens", "outputTokens", "cacheCreationTokens",
               "cacheReadTokens")
     entry = {"date": date, "month": date[:7], "project": project,
              "projectLabel": label, "sourceFile": "test.json",
+             "repo": repo if repo is not None else project,
+             "repoLabel": repo_label if repo_label is not None else label,
+             "worktreeLabel": worktree,
              "modelBreakdowns": breakdowns,
              "modelsUsed": sorted({b["modelName"] for b in breakdowns}),
              "totalCost": cost}
@@ -581,6 +585,110 @@ class AgentSeriesTests(unittest.TestCase):
         self.assertEqual(result["labels"], [])
         self.assertEqual(result["datasets"], [])
         self.assertIsNone(result["firstAgentsDate"])
+
+
+def wt_row(date, n, cost, tokens_out=1000):
+    """Row of worktree n of repo -a-r (label r)."""
+    return row(date, f"-a-r--worktrees-w{n}", f"r/w{n}", cost,
+               [bd("claude-opus-5", cost, out=tokens_out)],
+               repo="-a-r", repo_label="r", worktree=f"w{n}")
+
+
+def main_row(date, cost):
+    return row(date, "-a-r", "r", cost, [bd("claude-opus-5", cost)])
+
+
+class WorktreeGroupingTests(unittest.TestCase):
+    def table(self, rows, **kw):
+        return insights.project_insights(rows, **kw)["table"]
+
+    def test_repo_row_sums_union_of_days_and_quotient_of_sums(self):
+        rows = [main_row("2026-09-01", 10.0), wt_row("2026-09-01", 1, 5.0),
+                wt_row("2026-09-02", 2, 5.0, tokens_out=9000)]
+        table = self.table(rows)
+        self.assertEqual(len(table), 1)
+        r = table[0]
+        self.assertEqual((r["project"], r["projectLabel"]), ("-a-r", "r"))
+        self.assertAlmostEqual(r["cost"], 20.0)
+        self.assertEqual(r["days"], 2)
+        self.assertAlmostEqual(r["share"], 1.0)
+        self.assertAlmostEqual(r["costPerMillion"],
+                               r["cost"] / r["tokens"] * 1_000_000)
+
+    def test_children_order_main_first_then_cost_desc_ties_by_key(self):
+        rows = [wt_row("2026-09-01", 1, 3.0), wt_row("2026-09-01", 2, 7.0),
+                wt_row("2026-09-01", 3, 3.0), main_row("2026-09-01", 1.0)]
+        kids = self.table(rows)[0]["children"]
+        self.assertTrue(kids[0]["isMain"])
+        self.assertEqual([k["worktreeLabel"] for k in kids[1:]],
+                         ["w2", "w1", "w3"])
+        self.assertFalse(any(k.get("isRest") for k in kids))
+
+    def test_children_sum_to_repo_row(self):
+        rows = [main_row("2026-09-01", 1.0)] + [
+            wt_row("2026-09-01", n, float(n)) for n in range(1, 15)]
+        r = self.table(rows)[0]
+        kids = r["children"]
+        self.assertAlmostEqual(sum(k["cost"] for k in kids), r["cost"])
+        self.assertEqual(sum(k["tokens"] for k in kids), r["tokens"])
+        self.assertAlmostEqual(sum(k["share"] for k in kids), r["share"])
+
+    def test_top_ten_and_rest_row(self):
+        rows = [wt_row("2026-09-01", n, float(n)) for n in range(1, 14)]
+        kids = self.table(rows)[0]["children"]
+        self.assertEqual(len(kids), 11)
+        self.assertEqual(kids[0]["worktreeLabel"], "w13")
+        rest = kids[-1]
+        self.assertTrue(rest["isRest"])
+        self.assertEqual(rest["count"], 3)
+        self.assertAlmostEqual(rest["cost"], 1.0 + 2.0 + 3.0)
+        self.assertIsNone(rest["days"])
+        self.assertIsNone(rest["costPerMillion"])
+
+    def test_ten_worktrees_have_no_rest_row(self):
+        rows = [wt_row("2026-09-01", n, float(n)) for n in range(1, 11)]
+        kids = self.table(rows)[0]["children"]
+        self.assertEqual(len(kids), 10)
+        self.assertFalse(any(k.get("isRest") for k in kids))
+
+    def test_repo_without_worktrees_has_no_children(self):
+        self.assertNotIn("children", self.table([main_row("2026-09-01", 1.0)])[0])
+
+    def test_worktrees_only_have_no_main_row(self):
+        kids = self.table([wt_row("2026-09-01", 1, 2.0)])[0]["children"]
+        self.assertEqual(len(kids), 1)
+        self.assertFalse(kids[0]["isMain"])
+
+    def test_kpis_and_stacked_count_repos(self):
+        rows = [main_row("2026-09-01", 1.0), wt_row("2026-09-01", 1, 2.0),
+                row("2026-09-01", "-a-x", "x", 4.0, [bd("claude-opus-5", 4.0)])]
+        result = insights.project_insights(rows)
+        self.assertEqual(result["kpis"]["projectCount"], 2)
+        self.assertEqual(result["kpis"]["topProject"], "x")
+        self.assertEqual(sorted(d["label"] for d in result["stacked"]["datasets"]),
+                         ["r", "x"])
+
+    def test_date_filter_keeps_grouping(self):
+        rows = [main_row("2026-09-01", 1.0), wt_row("2026-09-05", 1, 2.0)]
+        r = self.table(rows, date_from="2026-09-04")[0]
+        self.assertEqual(r["project"], "-a-r")
+        self.assertEqual(len(r["children"]), 1)
+
+
+class RealDataWorktreeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        directory = require_real_data()
+        cls.rows = sources.load_projects(directory)["rows"]
+        if not cls.rows:
+            raise unittest.SkipTest("Keine Projektzeilen im Datenverzeichnis.")
+
+    def test_repo_rows_sum_to_raw_rows(self):
+        table = insights.project_insights(self.rows)["table"]
+        self.assertAlmostEqual(sum(t["cost"] for t in table),
+                               sum(r["totalCost"] for r in self.rows), places=4)
+        self.assertEqual(sum(t["tokens"] for t in table),
+                         sum(r["totalTokens"] for r in self.rows))
 
 
 class RealDataReferenceTests(unittest.TestCase):

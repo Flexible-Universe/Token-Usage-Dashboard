@@ -79,6 +79,15 @@ no series itself), plus a table with cost, share, tokens, days and
 The project names are shortened labels, see
 [chapter 2](02-data-sources.md).
 
+Worktrees run together under their repository. A repository row with
+`children` has a button in the name cell that expands it; the sub-rows follow
+directly below, indented and muted: the main checkout, the ten most expensive
+worktrees and a rest row. Column sorting applies to the repository rows only;
+sub-rows move with their repository and keep the backend order. The set of
+expanded repositories survives redraws, filter changes and reload, and is
+kept neither in the URL nor in `localStorage`. The Sessions tab still works
+with the raw keys.
+
 ### Sessions
 
 Source `sessions/`. KPI cards: sessions, median per session, most expensive
