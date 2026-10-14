@@ -3,6 +3,21 @@
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning according to [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The projects tab groups Git worktrees under their repository. Keys from
+  `<repo>/.claude/worktrees/`, `<repo>/.worktrees/` and `<repo>-worktrees/`
+  count towards the repository, but only if the repository itself appears
+  in the data; otherwise the key stays a project of its own. KPIs, the
+  stacked daily series and the table count repositories, totals are
+  unchanged.
+- A repository row with worktrees expands to the main checkout, the ten
+  most expensive worktrees and one row for the rest. `/api/projects`
+  carries these as `children`; project rows gain `repo`, `repoLabel` and
+  `worktreeLabel`. The sessions tab still lists raw project keys.
+
 ## [1.1.0] - 2026-10-10
 
 ### Added
