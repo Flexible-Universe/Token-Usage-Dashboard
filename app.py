@@ -28,6 +28,7 @@ import insights
 import loader
 import metrics
 import sources
+import version
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.toml"
@@ -266,6 +267,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # The remedy command for a weekly gap names the interpreter
                 # and is written for the host's shell.
                 "runtime": {"python": sys.executable, "windows": os.name == "nt"},
+                "app": self.app_info,
             }
         )
 
@@ -365,8 +367,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         ))
 
 
-def build_server(directory: Path, host: str, port: int) -> ThreadingHTTPServer:
-    handler = type("BoundHandler", (DashboardHandler,), {"store": DataStore(directory)})
+def build_server(directory: Path, host: str, port: int,
+                 app_info: dict | None = None) -> ThreadingHTTPServer:
+    if app_info is None:
+        # Tests build the server directly; warnings matter only at startup.
+        app_info, _ = version.detect(BASE_DIR)
+    handler = type("BoundHandler", (DashboardHandler,),
+                   {"store": DataStore(directory), "app_info": app_info})
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
     return server
@@ -381,6 +388,10 @@ def main(argv: list[str] | None = None) -> int:
     for note in notes:
         print(note)
 
+    app_info, version_warnings = version.detect(BASE_DIR)
+    for warning in version_warnings:
+        print(f"WARNUNG: {warning}", file=sys.stderr)
+
     try:
         directory = loader.resolve_data_directory(config, CONFIG_PATH)
         files = loader.check_data_directory(directory)
@@ -393,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:
     port = int(config["server"]["port"])
 
     try:
-        server = build_server(directory, host, port)
+        server = build_server(directory, host, port, app_info)
     except OSError as exc:
         print(f"FEHLER: Server konnte nicht auf {host}:{port} starten: {exc}",
               file=sys.stderr)

@@ -303,6 +303,10 @@ window.I18N.en = {
     "ui.foot.license1": "Token-Usage-Dashboard, free software under the",
     "ui.foot.license.link": "GNU AGPL, version 3",
     "ui.foot.license2": ". The complete source code is in this application's installation directory and on",
-    "ui.foot.github.link": "GitHub"
+    "ui.foot.github.link": "GitHub",
+    "ui.foot.version": "Version {version}",
+    "ui.foot.version.dev": "Version {version}, development build ",
+    "ui.foot.version.devNoCommit": "Version {version}, development build without commit",
+    "ui.foot.version.unknown": "Version unknown"
   }
 };

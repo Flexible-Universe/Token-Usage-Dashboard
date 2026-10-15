@@ -74,7 +74,6 @@ const state = {
 
 const charts = {};
 let metricsRequestId = 0;
-const DEFAULT_RANGE_FROM = '2026-05-01';
 
 /* ---------- Formatierung ---------- */
 function euroLessDollar(value, digits) {
@@ -212,12 +211,16 @@ function monthRange(period) {
 }
 
 // The span shown for "all months" and offered as the start of a custom
-// range. Local date on purpose: the inputs show the user's calendar day.
-function defaultRange() {
+// range: from the first exported day, so it marks when tracking began.
+// Before the first export there is no such day, and today is the only
+// start that claims nothing. Local date on purpose: the inputs show the
+// user's calendar day.
+function defaultRange(data = state.data) {
   const now = new Date();
   const today = [now.getFullYear(), now.getMonth() + 1, now.getDate()]
     .map((part) => String(part).padStart(2, '0')).join('-');
-  return { from: DEFAULT_RANGE_FROM, to: today };
+  const first = data && data.range && data.range.from;
+  return { from: first && first < today ? first : today, to: today };
 }
 
 async function getJSON(url) {
@@ -255,6 +258,7 @@ async function loadAll(reload) {
         .forEach((m) => state.selectedModels.delete(m));
     }
     renderDirectory(data);
+    renderVersion(data);
     renderStatus(data);
     renderExportState(data.health);
     renderFiles(data);
@@ -1302,7 +1306,7 @@ function setLanguage(code) {
   buildFormatters(state.locale);
   applyStaticTexts();
   if (state.data) {
-    buildPeriodOptions(state.data); renderStatus(state.data);
+    buildPeriodOptions(state.data); renderStatus(state.data); renderVersion(state.data);
     renderExportState(state.data.health); renderFiles(state.data);
   }
   if (state.metrics) { renderMetrics(); }
@@ -1311,6 +1315,30 @@ function setLanguage(code) {
 
 function renderDirectory(data) {
   document.getElementById('data-directory').textContent = data.directory;
+}
+
+// versionView: key, params and optional short hash for the footer line.
+// An absent app object (older server) yields null so the line stays empty.
+function versionView(app) {
+  if (!app) return null;
+  if (app.version === null || app.version === undefined) {
+    return { key: 'ui.foot.version.unknown', params: {}, commit: null };
+  }
+  const params = { version: app.version };
+  if (app.release) return { key: 'ui.foot.version', params, commit: null };
+  if (app.commit) return { key: 'ui.foot.version.dev', params, commit: app.commit };
+  return { key: 'ui.foot.version.devNoCommit', params, commit: null };
+}
+
+function renderVersion(data) {
+  const line = document.getElementById('app-version');
+  const view = versionView(data.app);
+  line.textContent = view ? t(view.key, view.params) : '';
+  if (view && view.commit) {
+    const code = document.createElement('code');
+    code.textContent = view.commit;
+    line.appendChild(code);
+  }
 }
 
 function showFatal(message) {
@@ -1600,9 +1628,9 @@ function buildPeriodOptions(data) {
   select.value = [...select.options].some((o) => o.value === previous) ? previous : 'all';
 
   // The bounds must also admit the default range, otherwise the inputs
-  // would show it as invalid while the data starts later or ends earlier.
-  const fallback = defaultRange();
-  const min = data.range.from && data.range.from < fallback.from ? data.range.from : fallback.from;
+  // would show it as invalid while the data ends earlier than today.
+  const fallback = defaultRange(data);
+  const min = fallback.from;
   const max = data.range.to && data.range.to > fallback.to ? data.range.to : fallback.to;
   ['date-from', 'date-to'].forEach((id) => {
     const input = document.getElementById(id);
@@ -1615,15 +1643,15 @@ function buildPeriodOptions(data) {
   if (select.value === 'custom' && state.period === 'custom' && state.from) {
     toggleRangeInputs();
   } else {
-    applyPeriod(select.value);
+    applyPeriod(select.value, data);
   }
 }
 
 // The inputs always show the span the period stands for, so state.from and
 // state.to hold that span too; activeRange reads them only for "custom".
-function applyPeriod(period) {
+function applyPeriod(period, data = state.data) {
   state.period = period;
-  const shown = period === 'all' || period === 'custom' ? defaultRange() : monthRange(period);
+  const shown = period === 'all' || period === 'custom' ? defaultRange(data) : monthRange(period);
   state.from = shown.from;
   state.to = shown.to;
   document.getElementById('date-from').value = shown.from;

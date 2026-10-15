@@ -3,12 +3,15 @@
 import json
 import os
 import sys
+import io
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stderr
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError
+from unittest import mock
 from urllib.request import Request, urlopen
 
 from tests.helpers import (
@@ -23,6 +26,7 @@ from tests.helpers import (
 
 import app
 import loader
+import version
 
 
 def get(url):
@@ -92,6 +96,24 @@ class ServerCase(unittest.TestCase):
         self.assertIn("health", payload)
         self.assertEqual(payload["runtime"], {"python": sys.executable,
                                               "windows": os.name == "nt"})
+        info = payload["app"]
+        self.assertEqual(set(info), {"version", "release", "commit"})
+        self.assertIsInstance(info["release"], bool)
+        for key in ("version", "commit"):
+            self.assertTrue(info[key] is None or isinstance(info[key], str))
+
+    def test_build_server_serves_given_app_info(self):
+        given = {"version": "9.8.7", "release": True, "commit": None}
+        server = app.build_server(self.tmp, "127.0.0.1", 0, app_info=given)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            payload = get(f"http://127.0.0.1:{server.server_port}/api/data")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(payload["app"], given)
 
     def test_api_health(self):
         payload = get(self.base + "/api/health")
@@ -210,6 +232,16 @@ class StartupTests(unittest.TestCase):
         empty = self.tmp / "leer"
         empty.mkdir()
         self.assertEqual(self._run_main(f'[data]\ndirectory = "{empty}"\n'), 2)
+
+    def test_version_warnings_go_to_stderr(self):
+        missing = self.tmp / "gibtsnicht"
+        detected = ({"version": None, "release": False, "commit": None},
+                    ["Testwarnung Version"])
+        buffer = io.StringIO()
+        with mock.patch.object(version, "detect", return_value=detected), \
+                redirect_stderr(buffer):
+            self._run_main(f'[data]\ndirectory = "{missing}"\n')
+        self.assertIn("WARNUNG: Testwarnung Version", buffer.getvalue())
 
     def test_broken_config_aborts(self):
         self.assertEqual(self._run_main("[data\n"), 2)

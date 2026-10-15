@@ -11,7 +11,7 @@ Tab bar       Uebersicht | Projekte | Sessions | Bloecke | RTK
 Status area   result of the plausibility check, message list
 Filter bar    period, quantity, models
 Tab content   KPI cards, charts, tables
-Footer        currency note, gap note
+Footer        currency note, gap note, version line
 ```
 
 All texts run through the two language catalogues under `static/i18n/`
@@ -24,6 +24,16 @@ opening the dashboard in a different browser would silently overwrite a
 deliberate choice. Switching needs no network access: the backend ships keys,
 not sentences, so data already loaded stays valid and is simply re-rendered
 in the other language.
+
+The footer carries a version line (`#app-version`), set from the `app`
+object of `/api/data` by `versionView` and `renderVersion` in `app.js`. It has
+three forms: a release shows `Version x.y.z`; a clone shows
+`Version x.y.z, development build` followed by the short commit hash in a
+`<code>` element, or `development build without commit` where no hash could be
+read; if the version is unknown the line reads `Version unknown`. An older
+server without `app` leaves the line empty. The keys are `ui.foot.version`,
+`ui.foot.version.dev`, `ui.foot.version.devNoCommit` and
+`ui.foot.version.unknown`.
 
 German rendering: numbers with a decimal comma and a thousands point, dates
 as TT.MM.JJJJ (`Intl.NumberFormat('de-DE')`). English rendering: decimal

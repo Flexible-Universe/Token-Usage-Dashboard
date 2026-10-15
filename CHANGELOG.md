@@ -7,6 +7,10 @@ versioning according to [SemVer](https://semver.org/).
 
 ### Added
 
+- The footer shows the running version: a release plainly, a clone with the
+  short commit hash. `/api/data` carries it as `app`. The number comes from
+  `CHANGELOG.md` alone; the commit is read from `.git` without calling the
+  git program.
 - On Windows the installer adds a start menu link `Token-Usage-Dashboard`
   for the current user. From a release it starts `start-dashboard.cmd`,
   from a clone `py -3 app.py`. `--no-shortcut` skips it; a failure is
@@ -24,6 +28,12 @@ versioning according to [SemVer](https://semver.org/).
   most expensive worktrees and one row for the rest. `/api/projects`
   carries these as `children`; project rows gain `repo`, `repoLabel` and
   `worktreeLabel`. The sessions tab still lists raw project keys.
+
+### Fixed
+
+- The date range for "all months" and the start of a custom range begin
+  at the first exported day instead of a fixed 01.05.2026. Before the
+  first export the range starts today.
 
 ## [1.1.0] - 2026-10-10
 

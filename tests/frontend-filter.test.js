@@ -71,6 +71,10 @@ function localToday() {
 
 test('date inputs follow the selected period', () => {
   const frontend = loadFrontend();
+  vm.runInContext(`state.data = {
+    models: [], months: ['2026-02', '2026-09'],
+    range: { from: '2026-02-10', to: '2026-09-14' } }`,
+    frontend.context);
   const period = frontend.element('period').listeners.change;
   const from = frontend.element('date-from');
   const to = frontend.element('date-to');
@@ -80,16 +84,29 @@ test('date inputs follow the selected period', () => {
   assert.equal(to.value, '2026-02-28');
 
   period({ target: { value: 'all' } });
-  assert.equal(from.value, '2026-05-01');
+  assert.equal(from.value, '2026-02-10');
   assert.equal(to.value, localToday());
 
   period({ target: { value: '2026-09' } });
   period({ target: { value: 'custom' } });
-  assert.equal(from.value, '2026-05-01');
+  assert.equal(from.value, '2026-02-10');
   assert.equal(to.value, localToday());
   assert.equal(
     frontend.requests.at(-1),
-    `/api/metrics?from=2026-05-01&to=${localToday()}`);
+    `/api/metrics?from=2026-02-10&to=${localToday()}`);
+});
+
+test('without exported days the range starts today', () => {
+  const frontend = loadFrontend();
+  vm.runInContext(`buildPeriodOptions({ months: [], range: { from: null, to: null } })`,
+    frontend.context);
+  const from = frontend.element('date-from');
+  const to = frontend.element('date-to');
+
+  assert.equal(from.value, localToday());
+  assert.equal(to.value, localToday());
+  assert.equal(from.min, localToday());
+  assert.equal(to.max, localToday());
 });
 
 test('a rebuilt period list keeps a custom range', () => {

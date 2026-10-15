@@ -107,6 +107,17 @@ source knows nothing about models. Both report this in the field
 call that closes a weekly export gap names the interpreter and is written for
 the host's shell, POSIX or PowerShell (see [chapter 6](06-checks.md)).
 
+`app` in `/api/data` is `{"version": <string or null>, "release": <bool>,
+"commit": <7-character hash or null>}`. `version.detect` determines it once at
+server start and `main` hands it to `build_server`; it is not recomputed per
+request. `RELEASE.json` wins (`release: true`, no commit); otherwise the top
+numbered heading of `CHANGELOG.md` gives the version and the commit is read
+from the files under `.git` (directory, worktree file with `commondir`,
+`packed-refs`, detached HEAD) without calling the git program. No `.git` is no
+error, the commit is simply `null`. A broken source yields `null` in the
+affected field and a `WARNUNG:` line on stderr, never a guessed number. There
+is no health message for the version.
+
 ## `loader.py` — configuration and monthly files
 
 ### Configuration

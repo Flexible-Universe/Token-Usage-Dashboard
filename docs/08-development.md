@@ -26,10 +26,27 @@ installer tests that need launchd or a POSIX shell skip in addition.
 | `tests/test_export_ccusage.py`, `tests/test_export_rtk.py` | the export scripts against stub binaries: policies, options, status files |
 | `tests/test_export_status.py` | the status helper `export/export-status.py` |
 | `tests/test_export_check.py` | reading and evaluating the status files (`sources.load_status`, `sources.check_export_status`) |
+| `tests/test_version.py` | `version.py`: changelog parsing, precedence of `RELEASE.json`, commit lookup from `.git`, broken sources, and the real `CHANGELOG.md` headings |
 | `tests/test_requirements_doc.py` | the minimum versions in `install.py` match `README.md` and `docs/07-installation.md`, line by line |
 | `tests/test_install.py` | `install.py`: options, dry run, demo mode, rtk probe, the four schedulers with recorded commands |
 | `tests/test_platform_paths.py` | default data directory of loader and export chain in step, TOML escaping |
 | `tests/helpers.py` | test data and temporary directories |
+
+### Releasing
+
+`CHANGELOG.md` is the only source of the version number; nothing else in the
+code names it.
+
+1. Turn `## [Unreleased]` into `## [x.y.z] - YYYY-MM-DD` and put a new, empty
+   `## [Unreleased]` above it.
+2. Commit and tag `vx.y.z`.
+3. Run `python3 tools/build-release.py`.
+
+Without `--version` the build takes the top numbered version. It aborts if
+`[Unreleased]` still holds entries; either make that section a version or pass
+`--version`. An explicit `--version` stays an override but must be valid
+SemVer. `version.py` is in the file list of the package, otherwise it would not
+start.
 
 ### Reference tests
 
