@@ -5,6 +5,13 @@ versioning according to [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- On Windows the installer adds a start menu link `Token-Usage-Dashboard`
+  for the current user. From a release it starts `start-dashboard.cmd`,
+  from a clone `py -3 app.py`. `--no-shortcut` skips it; a failure is
+  reported as a note.
+
 ### Changed
 
 - The projects tab groups Git worktrees under their repository. Keys from

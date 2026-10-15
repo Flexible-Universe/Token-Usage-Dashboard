@@ -171,6 +171,12 @@ and pass every argument on to `install.py`, which does the actual work:
    the interpreter it found, `start-dashboard.cmd` on Windows with the `py`
    launcher (`py -3`) when it is installed, so a Python upgrade does not
    break it. The Windows tasks use `pyw -3` for the same reason.
+9. On Windows it adds `Token-Usage-Dashboard.lnk` to the user's start menu
+   (`%APPDATA%\Microsoft\Windows\Start Menu\Programs`), pointing at
+   `start-dashboard.cmd`. It writes the link through PowerShell
+   (`WScript.Shell`), because the standard library cannot write `.lnk`
+   files; an existing link is replaced. If PowerShell fails, that is a note,
+   not an abort. `--no-shortcut` skips the step.
 
 At the end it lists every note again and names the start script.
 
@@ -181,7 +187,8 @@ At the end it lists every note again and names the start script.
 ~/.local/share/token-usage-dashboard/start-dashboard.sh                        # Linux
 ```
 
-On Windows double-click `start-dashboard.cmd` in
+On Windows open "Token-Usage-Dashboard" from the start menu, or
+double-click `start-dashboard.cmd` in
 `%LOCALAPPDATA%\Programs\Token-Usage-Dashboard`. The browser opens by itself;
 `Ctrl+C` in the window ends the server.
 
@@ -199,8 +206,8 @@ To remove the export jobs:
 If the jobs were created with `--label-prefix` or `--scheduler`, pass the same
 values again. On Linux without `--scheduler`, both systemd timers and the cron
 block are removed, whichever exists. Nothing in the data directory is ever deleted, neither by this
-call nor by any other; the application directory and the data directory are
-removed by hand if wanted.
+call nor by any other; the application directory, the data directory and on
+Windows the start menu link are removed by hand if wanted.
 
 ## Installer options
 
@@ -220,6 +227,7 @@ a release or from a clone:
 | `--dry-run` | show what would happen, change nothing |
 | `--demo` | demo mode with sample data, without `ccusage` or `rtk` |
 | `--no-first-export` | skip the first export run at the end of the setup |
+| `--no-shortcut` | Windows only: no start menu link |
 
 **Demo mode.** For live data, at least one of `ccusage` or a working `rtk`
 must be installed. If the installer finds neither, it offers either to abort
@@ -416,7 +424,9 @@ install.cmd --with-jobs                   # Windows
 ```
 
 From a clone the application stays where it is: `config.toml` is written
-next to `app.py`, and no start script is created. Otherwise the installer
+next to `app.py`, and no start script is created. On Windows the start menu
+link then calls the interpreter (`py -3 app.py`) in the clone directly.
+Otherwise the installer
 does what is described under "The release package": it creates the data
 directory with its subdirectories, copies the seven export files
 (`ccusage-export.py`, `rtk-export.py`, `exportlib.py`, `ccusage-check.py`,

@@ -8,6 +8,7 @@ systemctl, crontab and schtasks, and check the files that would be loaded.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import os
 import plistlib
@@ -86,7 +87,7 @@ class OptionTests(TempHome):
         self.assertEqual(result.returncode, 0, result.stderr)
         for option in ("--with-jobs", "--with-launchagents", "--no-jobs", "--remove-jobs",
                        "--scheduler", "--label-prefix", "--data-dir", "--force",
-                       "--dry-run", "--demo"):
+                       "--dry-run", "--demo", "--no-shortcut"):
             self.assertIn(option, result.stdout)
 
     def test_unknown_option_aborts(self):
@@ -349,8 +350,8 @@ def load_installer():
     return module
 
 
-class SchedulerTests(TempHome):
-    """The scheduler files, with every scheduler command recorded instead of run."""
+class RecordedCommands(TempHome):
+    """In-process installer with every scheduler command recorded instead of run."""
 
     def setUp(self):
         super().setUp()
@@ -392,6 +393,9 @@ class SchedulerTests(TempHome):
 
     def called(self, *prefix) -> list[list[str]]:
         return [cmd for cmd, _ in self.commands if cmd[:len(prefix)] == list(prefix)]
+
+class SchedulerTests(RecordedCommands):
+    """The scheduler files."""
 
     @unittest.skipUnless(IS_MACOS, "launchd only exists on macOS")
     def test_launchd_writes_and_loads_four_agents(self):
@@ -776,6 +780,103 @@ class VersionCheckTests(unittest.TestCase):
             self.assertIn(needle, text)
         self.assertLess(text.index("Passt nicht:"), text.index("Passt:"))
         self.assertFalse(text.startswith("Fehler"))
+
+
+class ShortcutTests(RecordedCommands):
+    """The start menu shortcut, with PowerShell recorded instead of run."""
+
+    def setUp(self):
+        super().setUp()
+        self.env["APPDATA"] = str(self.home / "AppData" / "Roaming")
+        env = mock.patch.dict(os.environ, {"APPDATA": self.env["APPDATA"]})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def on_windows(self):
+        patcher = mock.patch.object(self.installer, "IS_WINDOWS", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def scripts(self) -> list[str]:
+        calls = self.called("powershell")
+        return [base64.b64decode(cmd[cmd.index("-EncodedCommand") + 1]).decode("utf-16-le")
+                for cmd in calls]
+
+    def test_literal_doubles_every_single_quote_powershell_knows(self):
+        literal = self.installer._ps_literal("C:\\O'Neil\u2018x\u2019y\u201az\u201b")
+        self.assertEqual(literal, "'C:\\O''Neil\u2018\u2018x\u2019\u2019y\u201a\u201az\u201b\u201b'")
+
+    def test_link_lies_in_the_users_start_menu(self):
+        self.assertEqual(self.installer.start_menu_dir(),
+                         self.home / "AppData" / "Roaming" / "Microsoft" / "Windows"
+                         / "Start Menu" / "Programs")
+
+    def test_clone_on_windows_links_python_with_app_py(self):
+        self.on_windows()
+        code, output = self.main("--no-first-export")
+        self.assertEqual(code, 0, output)
+        [script] = self.scripts()
+        link = self.installer.start_menu_dir() / "Token-Usage-Dashboard.lnk"
+        self.assertIn(f"CreateShortcut('{link}')", script)
+        self.assertIn("app.py", script)
+        self.assertIn(f"WorkingDirectory = '{BASE_DIR}'", script)
+        self.assertIn("Save()", script)
+        self.assertIn(str(link), output)
+        self.assertTrue(link.parent.is_dir())
+
+    def test_umlaut_path_survives_the_encoded_command(self):
+        self.on_windows()
+        out = self.installer.Output()
+        link = self.home / "J\u00fcrgen" / "x.lnk"
+        with redirect_stdout(StringIO()):
+            self.installer.write_shortcut(link, "C:\\a b\\start.cmd", "", self.home, False, out)
+        [script] = self.scripts()
+        self.assertIn("J\u00fcrgen", script)
+        self.assertIn("TargetPath = 'C:\\a b\\start.cmd'", script)
+        self.assertEqual(out.notes, [])
+
+    def test_failure_is_a_note_not_an_abort(self):
+        self.on_windows()
+        fake = self.installer.run_command.side_effect
+
+        def failing(cmd, input_text=None):
+            if cmd[0] == "powershell":
+                return subprocess.CompletedProcess(cmd, 1, "", "COM kaputt")
+            return fake(cmd, input_text)
+
+        self.installer.run_command.side_effect = failing
+        code, output = self.main("--no-first-export")
+        self.assertEqual(code, 0, output)
+        self.assertIn("COM kaputt", output)
+        self.assertIn("Verknuepfung", output)
+
+    def test_missing_powershell_is_a_note(self):
+        out = self.installer.Output()
+        self.installer.run_command.side_effect = OSError("not found")
+        with redirect_stdout(StringIO()):
+            self.installer.write_shortcut(self.home / "x.lnk", "t", "", self.home, False, out)
+        self.assertEqual(len(out.notes), 1)
+
+    def test_dry_run_calls_nothing(self):
+        self.on_windows()
+        code, output = self.main("--no-first-export", "--dry-run")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.called("powershell"), [])
+        self.assertIn("Verknuepfung", output)
+
+    def test_no_shortcut_option_skips_the_step(self):
+        self.on_windows()
+        code, output = self.main("--no-first-export", "--no-shortcut")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.called("powershell"), [])
+
+    def test_no_step_outside_windows(self):
+        if os.name == "nt":
+            self.skipTest("runs on Windows")
+        code, output = self.main("--no-first-export")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.called("powershell"), [])
+        self.assertNotIn("Verknuepfung", output)
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ User-facing output stays German like the rest of the installer chain.
 from __future__ import annotations
 
 import argparse
+import base64
 import getpass
 import json
 import os
@@ -945,6 +946,54 @@ def write_launcher(app_dir: Path, dry_run: bool, out: Output) -> Path:
     return target
 
 
+def start_menu_dir() -> Path:
+    base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    return Path(base) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+
+
+def _ps_literal(text: str) -> str:
+    # PowerShell also ends a single-quoted string at the typographic single
+    # quotes, so each of them is doubled like the plain one.
+    for quote in "'\u2018\u2019\u201a\u201b":
+        text = text.replace(quote, quote * 2)
+    return f"'{text}'"
+
+
+def shortcut_script(link: Path, target: str, arguments: str, workdir: Path) -> str:
+    e = _ps_literal
+    return (f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut({e(str(link))})\n"
+            f"$s.TargetPath = {e(target)}\n"
+            f"$s.Arguments = {e(arguments)}\n"
+            f"$s.WorkingDirectory = {e(str(workdir))}\n"
+            f"$s.Description = {e(PRODUCT)}\n"
+            "$s.Save()\n")
+
+
+def write_shortcut(link: Path, target: str, arguments: str, workdir: Path,
+                   dry_run: bool, out: Output) -> None:
+    """Start menu entry; the standard library cannot write .lnk files itself."""
+    if dry_run:
+        out.would(f"Verknuepfung anlegen: {link}")
+        return
+    # -EncodedCommand takes UTF-16LE and keeps an umlaut in a path intact,
+    # which the console code page of -Command would not.
+    encoded = base64.b64encode(shortcut_script(link, target, arguments, workdir)
+                               .encode("utf-16-le")).decode("ascii")
+    try:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        result = run_command(["powershell", "-NoProfile", "-NonInteractive",
+                              "-EncodedCommand", encoded])
+    except OSError as error:
+        out.note(f"Verknuepfung im Startmenue nicht angelegt: {error}")
+        return
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        out.note(f"Verknuepfung im Startmenue nicht angelegt (Exitcode {result.returncode}): "
+                 f"{detail}")
+        return
+    out.did(f"Verknuepfung: {link}")
+
+
 # --- main -----------------------------------------------------------------
 
 def parse_args(argv: list[str], release: bool) -> argparse.Namespace:
@@ -985,6 +1034,8 @@ def parse_args(argv: list[str], release: bool) -> argparse.Namespace:
                         help="Demo-Modus mit Beispieldaten, ohne ccusage und rtk.")
     parser.add_argument("--no-first-export", action="store_true",
                         help="Den ersten Export am Ende der Einrichtung auslassen.")
+    parser.add_argument("--no-shortcut", action="store_true",
+                        help="Unter Windows keine Verknuepfung im Startmenue anlegen.")
     args = parser.parse_args(argv)
     args.with_jobs = args.with_jobs or args.with_jobs_alias
     if args.app_dir and not release:
@@ -1233,6 +1284,18 @@ def _main(argv: list[str]) -> int:
     if release:
         out.step("Startskript")
         launcher = write_launcher(app_dir, args.dry_run, out)
+
+    if IS_WINDOWS and not args.no_shortcut:
+        out.step("Startmenue")
+        if launcher:
+            target, arguments = str(launcher), ""
+        else:
+            # A clone gets no start script, so as not to leave an untracked
+            # file in the repository; the link calls the interpreter itself.
+            python = console_python()
+            target, arguments = python[0], subprocess.list2cmdline([*python[1:], "app.py"])
+        write_shortcut(start_menu_dir() / f"{PRODUCT}.lnk", target, arguments, app_dir,
+                       args.dry_run, out)
 
     out.step("Ergebnis")
     if out.notes:
